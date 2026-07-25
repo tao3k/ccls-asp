@@ -29,7 +29,6 @@ struct Options {
   std::string owner;
   std::string query;
   std::string selector;
-  bool json = false;
   bool code = false;
 };
 
@@ -62,8 +61,11 @@ Options parse_options(int argc, char **argv) {
       take(options.workspace);
     else if (arg == "--selector")
       take(options.selector);
-    else if (arg == "--json")
-      options.json = true;
+    else if (arg == "--query")
+      take(options.query);
+    else if (arg == "--json") {
+      // Compatibility flag. Provider stdout is always a JSON packet; ASP owns rendering.
+    }
     else if (arg == "--code")
       options.code = true;
     else if (arg == "--view") {
@@ -151,7 +153,7 @@ std::vector<const Fact *> selected_facts(const IndexResult &index, const Options
   return selected;
 }
 
-void render_search_json(const IndexResult &index, const Options &options) {
+void emit_search_packet(const IndexResult &index, const Options &options) {
   const auto selected = selected_facts(index, options);
   auto packet = packet_base(options, "search/" + options.search_view);
   packet["schemaId"] = "agent.semantic-protocols.semantic-search-packet";
@@ -220,18 +222,6 @@ void render_search_json(const IndexResult &index, const Options &options) {
   print_json(std::move(packet));
 }
 
-void render_search_text(const IndexResult &index, const Options &options) {
-  const auto selected = selected_facts(index, options);
-  std::cout << "[search-" << options.language << "] view=" << options.search_view
-            << " authority=clang-ast units=" << index.compilation_units.size() << " facts=" << selected.size() << "\n";
-  for (const Fact *fact : selected)
-    std::cout << "item=" << fact->kind << " name=" << fact->qualified_name << " owner=" << fact->location.path
-              << " lines=" << fact->location.start_line << ":" << fact->location.end_line << " role=" << fact->role
-              << "\n";
-  for (const auto &error : index.errors)
-    std::cout << "note=parse-error message=" << error << "\n";
-}
-
 struct Selector {
   std::string path;
   std::uint32_t start = 1;
@@ -284,13 +274,13 @@ std::string exact_source(const Options &options, const Selector &selector) {
   return output.str();
 }
 
-void render_query_json(const IndexResult &index, const Options &options, const Selector &selector) {
+void emit_query_packet(const IndexResult &index, const Options &options, const Selector &selector) {
   auto packet = packet_base(options, "query/exact-selector");
   packet["schemaId"] = "agent.semantic-protocols.semantic-query-packet";
   packet["query"] = selector.path;
   packet["queryTerms"] = llvm::json::Array{selector.path};
   packet["ownerPath"] = selector.path;
-  packet["outputMode"] = "outline";
+  packet["outputMode"] = options.code ? "source" : "outline";
   packet["truncated"] = false;
   llvm::json::Array matches;
   for (const auto &fact : index.facts) {
@@ -318,20 +308,17 @@ void render_query_json(const IndexResult &index, const Options &options, const S
   safety["exactRead"] = selector.path + ":" + std::to_string(selector.start) + ":" +
                         std::to_string(selector.end ? selector.end : selector.start);
   packet["patchSafety"] = std::move(safety);
+  if (options.code)
+    packet["source"] = exact_source(options, selector);
   print_json(std::move(packet));
 }
 
-void render_guide(const Options &options) {
-  std::cout << "provider=ccls-asp language=" << options.language << " authority=clang-ast\n"
-            << "prime=ccls-asp --language " << options.language << " search prime --workspace . --view seeds\n"
-            << "owner=ccls-asp --language " << options.language
-            << " search owner <path> items --workspace . --view seeds\n"
-            << "lexical=ccls-asp --language " << options.language
-            << " search lexical <term> owner tests --workspace . --view seeds\n"
-            << "query=ccls-asp --language " << options.language
-            << " query --selector <path-or-range> --workspace . --json\n"
-            << "code=ccls-asp --language " << options.language
-            << " query --selector <path:start:end> --workspace . --code\n";
+void emit_guide_packet(const Options &options) {
+  auto packet = packet_base(options, "guide");
+  packet["sourceAuthority"] = "clang-ast";
+  packet["commands"] = llvm::json::Array{"search/prime", "search/owner", "search/lexical",
+                                         "query/exact-selector"};
+  print_json(std::move(packet));
 }
 
 } // namespace
@@ -342,7 +329,7 @@ int main(int argc, char **argv) {
     if (!valid_language(options.language))
       throw std::runtime_error("--language must be c, cpp, or objective-c");
     if (options.command == "guide" || options.command == "help") {
-      render_guide(options);
+      emit_guide_packet(options);
       return 0;
     }
 
@@ -350,15 +337,8 @@ int main(int argc, char **argv) {
       if (options.selector.empty())
         throw std::runtime_error("query requires --selector");
       const Selector selector = parse_selector(options.selector);
-      if (options.code) {
-        std::cout << exact_source(options, selector);
-        return 0;
-      }
       const auto index = ccls_asp::build_index(options.workspace, selector.path, options.language);
-      if (options.json)
-        render_query_json(index, options, selector);
-      else
-        render_search_text(index, options);
+      emit_query_packet(index, options, selector);
       return index.errors.empty() ? 0 : 1;
     }
 
@@ -367,10 +347,7 @@ int main(int argc, char **argv) {
       if (!options.owner.empty())
         owner = options.owner;
       const auto index = ccls_asp::build_index(options.workspace, owner, options.language);
-      if (options.json)
-        render_search_json(index, options);
-      else
-        render_search_text(index, options);
+      emit_search_packet(index, options);
       return index.errors.empty() ? 0 : 1;
     }
 

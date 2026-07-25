@@ -61,3 +61,9 @@ add_test(
           --selector widget.cpp:1:4
           --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cpp --code
 )
+add_test(
+  NAME ccls-asp-json-only-contract
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_json_only.cmake
+)
