@@ -31,7 +31,8 @@ struct IndexResult {
 };
 
 IndexResult build_index(const std::string &workspace, const std::optional<std::string> &owner,
-                        const std::string &language);
+                        const std::string &language,
+                        const std::optional<std::string> &compilation_database = std::nullopt);
 
 bool supports_source_path(const std::string &path, const std::string &language);
 

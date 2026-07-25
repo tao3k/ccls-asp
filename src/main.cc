@@ -29,6 +29,7 @@ struct Options {
   std::string owner;
   std::string query;
   std::string selector;
+  std::string compilation_database;
   bool code = false;
 };
 
@@ -61,12 +62,13 @@ Options parse_options(int argc, char **argv) {
       take(options.workspace);
     else if (arg == "--selector")
       take(options.selector);
+    else if (arg == "--compilation-database")
+      take(options.compilation_database);
     else if (arg == "--query")
       take(options.query);
     else if (arg == "--json") {
       // Compatibility flag. Provider stdout is always a JSON packet; ASP owns rendering.
-    }
-    else if (arg == "--code")
+    } else if (arg == "--code")
       options.code = true;
     else if (arg == "--view") {
       std::string ignored;
@@ -316,8 +318,7 @@ void emit_query_packet(const IndexResult &index, const Options &options, const S
 void emit_guide_packet(const Options &options) {
   auto packet = packet_base(options, "guide");
   packet["sourceAuthority"] = "clang-ast";
-  packet["commands"] = llvm::json::Array{"search/prime", "search/owner", "search/lexical",
-                                         "query/exact-selector"};
+  packet["commands"] = llvm::json::Array{"search/prime", "search/owner", "search/lexical", "query/exact-selector"};
   print_json(std::move(packet));
 }
 
@@ -337,7 +338,11 @@ int main(int argc, char **argv) {
       if (options.selector.empty())
         throw std::runtime_error("query requires --selector");
       const Selector selector = parse_selector(options.selector);
-      const auto index = ccls_asp::build_index(options.workspace, selector.path, options.language);
+      const std::optional<std::string> compilation_database =
+          options.compilation_database.empty() ? std::nullopt
+                                               : std::optional<std::string>(options.compilation_database);
+      const auto index =
+          ccls_asp::build_index(options.workspace, selector.path, options.language, compilation_database);
       emit_query_packet(index, options, selector);
       return index.errors.empty() ? 0 : 1;
     }
@@ -346,7 +351,10 @@ int main(int argc, char **argv) {
       std::optional<std::string> owner;
       if (!options.owner.empty())
         owner = options.owner;
-      const auto index = ccls_asp::build_index(options.workspace, owner, options.language);
+      const std::optional<std::string> compilation_database =
+          options.compilation_database.empty() ? std::nullopt
+                                               : std::optional<std::string>(options.compilation_database);
+      const auto index = ccls_asp::build_index(options.workspace, owner, options.language, compilation_database);
       emit_search_packet(index, options);
       return index.errors.empty() ? 0 : 1;
     }

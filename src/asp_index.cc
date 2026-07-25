@@ -2,6 +2,8 @@
 #include "asp_index.hh"
 
 #include <clang/AST/ASTConsumer.h>
+#include <clang/Tooling/ArgumentsAdjusters.h>
+
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/DeclObjC.h>
 #include <clang/AST/RecursiveASTVisitor.h>
@@ -9,6 +11,8 @@
 #include <clang/Frontend/FrontendAction.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
+#include <cstdlib>
+#include <iomanip>
 #include <llvm/Support/Path.h>
 
 #include <algorithm>
@@ -284,8 +288,44 @@ bool supports_source_path(const std::string &path, const std::string &language) 
          extension == ".hh" || extension == ".hpp" || extension == ".hxx" || extension == ".h";
 }
 
+static std::vector<std::string> environment_compiler_args() {
+  std::vector<std::string> args;
+  const auto append_flags = [&](const char *value) {
+    if (!value || !*value)
+      return;
+    std::istringstream input(value);
+    std::string argument;
+    while (input >> std::quoted(argument))
+      args.push_back(argument);
+  };
+
+  append_flags(std::getenv("NIX_CFLAGS_COMPILE"));
+  append_flags(std::getenv("CCLS_ASP_EXTRA_CLANG_ARGS"));
+
+  // Nix's compiler wrapper adds c++/v1 only when its executable runs.
+  // ClangTool consumes compilation commands in-process, so materialize it.
+  for (std::size_t index = 0; index + 1 < args.size(); ++index) {
+    if (args[index] != "-isystem")
+      continue;
+    const fs::path cxx_headers = fs::path(args[index + 1]) / "c++" / "v1";
+    std::error_code ec;
+    if (fs::is_directory(cxx_headers, ec)) {
+      args.push_back("-isystem");
+      args.push_back(cxx_headers.string());
+      break;
+    }
+  }
+
+  if (const char *sdk_root = std::getenv("SDKROOT"); sdk_root && *sdk_root) {
+    args.push_back("-isysroot");
+    args.emplace_back(sdk_root);
+  }
+  args.emplace_back("-resource-dir=" CCLS_ASP_CLANG_RESOURCE_DIR);
+  return args;
+}
+
 IndexResult build_index(const std::string &workspace, const std::optional<std::string> &owner,
-                        const std::string &language) {
+                        const std::string &language, const std::optional<std::string> &compilation_database) {
   IndexResult result;
   std::error_code ec;
   fs::path root = fs::weakly_canonical(fs::path(workspace), ec);
@@ -296,7 +336,14 @@ IndexResult build_index(const std::string &workspace, const std::optional<std::s
 
   CollectorState state{root, language, {}, {}};
   std::string database_error;
-  auto database = clang::tooling::CompilationDatabase::autoDetectFromDirectory(root.string(), database_error);
+  fs::path database_root = root;
+  if (compilation_database) {
+    database_root = fs::path(*compilation_database);
+    if (database_root.is_relative())
+      database_root = root / database_root;
+    database_root = fs::weakly_canonical(database_root, ec);
+  }
+  auto database = clang::tooling::CompilationDatabase::autoDetectFromDirectory(database_root.string(), database_error);
 
   std::vector<std::string> files;
   if (owner) {
@@ -326,6 +373,11 @@ IndexResult build_index(const std::string &workspace, const std::optional<std::s
   FactActionFactory factory(state);
   if (database && !files.empty()) {
     clang::tooling::ClangTool tool(*database, files);
+    const auto compiler_args = environment_compiler_args();
+    if (!compiler_args.empty()) {
+      tool.appendArgumentsAdjuster(
+          clang::tooling::getInsertArgumentAdjuster(compiler_args, clang::tooling::ArgumentInsertPosition::BEGIN));
+    }
     const int status = tool.run(&factory);
     if (status != 0)
       result.errors.push_back("ClangTool failed with status " + std::to_string(status));

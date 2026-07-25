@@ -4,8 +4,16 @@ project(ccls_asp LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(Clang REQUIRED CONFIG)
+
+execute_process(
+  COMMAND ${CMAKE_CXX_COMPILER} --print-resource-dir
+  OUTPUT_VARIABLE CCLS_ASP_CLANG_RESOURCE_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  COMMAND_ERROR_IS_FATAL ANY
+)
 
 add_executable(ccls-asp
   src/asp_index.cc
@@ -20,6 +28,10 @@ target_include_directories(ccls-asp PRIVATE
   src
 )
 target_compile_definitions(ccls-asp PRIVATE ${LLVM_DEFINITIONS})
+target_compile_definitions(
+  ccls-asp PRIVATE
+  CCLS_ASP_CLANG_RESOURCE_DIR="${CCLS_ASP_CLANG_RESOURCE_DIR}"
+)
 target_compile_options(ccls-asp PRIVATE -Wall -Wextra -Wpedantic)
 
 if(TARGET clang-cpp)
@@ -66,4 +78,17 @@ add_test(
   COMMAND
     ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_json_only.cmake
+)
+add_test(
+  NAME ccls-asp-self-index
+  COMMAND
+    ccls-asp --language cpp search owner src/asp_index.cc items
+    --query build_index --workspace ${CMAKE_CURRENT_SOURCE_DIR}
+    --compilation-database ${CMAKE_CURRENT_BINARY_DIR} --json
+)
+set_tests_properties(
+  ccls-asp-self-index
+  PROPERTIES
+    PASS_REGULAR_EXPRESSION "\"qualifiedName\": \"ccls_asp::build_index\""
+    FAIL_REGULAR_EXPRESSION "parse-error|ClangTool failed|fatal error"
 )
