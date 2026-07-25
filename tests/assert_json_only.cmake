@@ -1,3 +1,5 @@
+cmake_policy(SET CMP0054 NEW)
+
 if(NOT DEFINED CCLS_ASP)
   message(FATAL_ERROR "CCLS_ASP is required")
 endif()
