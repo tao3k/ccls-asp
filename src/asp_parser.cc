@@ -7,7 +7,6 @@
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/DeclObjC.h>
 #include <clang/AST/RecursiveASTVisitor.h>
-#include <clang/Basic/Version.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendAction.h>
 #include <clang/Lex/PPCallbacks.h>
@@ -234,11 +233,7 @@ public:
 
   void InclusionDirective(clang::SourceLocation hash_location, const clang::Token &, llvm::StringRef file_name, bool,
                           clang::CharSourceRange, clang::OptionalFileEntryRef, llvm::StringRef, llvm::StringRef,
-                          const clang::Module *,
-#if CLANG_VERSION_MAJOR >= 19
-                          bool,
-#endif
-                          clang::SrcMgr::CharacteristicKind) override {
+                          const clang::Module *, bool, clang::SrcMgr::CharacteristicKind) override {
     const auto owner_path = project_path(source_manager_, hash_location, state_.workspace);
     if (!owner_path || !supports_source_path(*owner_path, state_.language))
       return;

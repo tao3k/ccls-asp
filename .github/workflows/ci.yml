@@ -11,15 +11,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Clang tooling
-        run: sudo apt-get update && sudo apt-get install -y clang llvm-dev libclang-dev cmake ninja-build
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21 all
+          sudo apt-get install -y cmake ninja-build
       - name: Configure
         run: >-
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER=clang-18
-          -DCMAKE_CXX_COMPILER=clang++-18
-          -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
-          -DClang_DIR=/usr/lib/llvm-18/lib/cmake/clang
+          -DCMAKE_C_COMPILER=clang-21
+          -DCMAKE_CXX_COMPILER=clang++-21
+          -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
+          -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang
       - name: Build
         run: cmake --build build
       - name: Test C, C++, and Objective-C
