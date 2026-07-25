@@ -16,6 +16,8 @@ jobs:
         run: >-
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=clang-18
+          -DCMAKE_CXX_COMPILER=clang++-18
           -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
           -DClang_DIR=/usr/lib/llvm-18/lib/cmake/clang
       - name: Build
