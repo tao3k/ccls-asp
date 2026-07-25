@@ -86,8 +86,6 @@ Options parse_options(int argc, char **argv) {
         options.owner = positional[2];
       if (options.search_view == "lexical" && positional.size() > 2)
         options.query = positional[2];
-    } else if (options.command == "check") {
-      options.search_view = positional.size() > 1 ? positional[1] : "changed";
     } else if (options.command == "query" && options.selector.empty() && positional.size() > 1) {
       options.selector = positional[1];
     }
@@ -373,20 +371,6 @@ int main(int argc, char **argv) {
         render_search_json(index, options);
       else
         render_search_text(index, options);
-      return index.errors.empty() ? 0 : 1;
-    }
-
-    if (options.command == "check") {
-      const auto index = ccls_asp::build_index(options.workspace, std::nullopt, options.language);
-      if (options.json) {
-        render_search_json(index, options);
-      } else {
-        std::cout << "status=" << (index.errors.empty() ? "passed" : "failed") << " language=" << options.language
-                  << " units=" << index.compilation_units.size() << " facts=" << index.facts.size()
-                  << " errors=" << index.errors.size() << "\n";
-        for (const auto &error : index.errors)
-          std::cout << "error=" << error << "\n";
-      }
       return index.errors.empty() ? 0 : 1;
     }
 

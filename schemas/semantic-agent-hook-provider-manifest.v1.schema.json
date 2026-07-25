@@ -222,8 +222,7 @@
         "prime",
         "owner",
         "lexical",
-        "ingest",
-        "checkChanged"
+        "ingest"
       ],
       "properties": {
         "prime": {

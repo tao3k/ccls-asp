@@ -11,7 +11,7 @@ document synchronization. The retained product boundary is:
 - compilation database fidelity;
 - Clang AST declarations, definitions, calls, types, inheritance, and
   Objective-C entities;
-- ASP `search`, `query`, `check`, and `guide` commands;
+- ASP `search`, `query`, and `guide` commands;
 - schema-owned JSON packets and compact agent-facing projections.
 
 ## Build
