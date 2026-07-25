@@ -13,7 +13,11 @@ jobs:
       - name: Install Clang tooling
         run: sudo apt-get update && sudo apt-get install -y clang llvm-dev libclang-dev cmake ninja-build
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          -DClang_DIR=/usr/lib/llvm-18/lib/cmake/clang
       - name: Build
         run: cmake --build build
       - name: Test C, C++, and Objective-C
