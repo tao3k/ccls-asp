@@ -31,9 +31,6 @@
     "agentSearchJson": "block"
   },
   "routes": {
-    "prime": {"argv": ["ccls-asp", "--language", "c", "search", "prime", "--workspace", "{projectRoot}", "--view", "seeds"]},
-    "owner": {"argv": ["ccls-asp", "--language", "c", "search", "owner", "{path}", "--workspace", "{projectRoot}", "--view", "seeds"]},
-    "lexical": {"argv": ["ccls-asp", "--language", "c", "search", "lexical", "{query}", "owner", "tests", "--workspace", "{projectRoot}", "--view", "seeds"]},
     "query": {"argv": ["ccls-asp", "--language", "c", "query", "--from-hook", "direct-source-read", "--selector", "{selector}", "{termArgs}", "--workspace", "{projectRoot}", "--view", "seeds"]},
     "ingest": {"argv": ["ccls-asp", "--language", "c", "search", "ingest", "--workspace", "{projectRoot}", "--view", "seeds"], "stdinMode": "pipe-candidates"},
     "guide": {"argv": ["ccls-asp", "--language", "c", "guide", "--workspace", "{projectRoot}"]}

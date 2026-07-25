@@ -1,23 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "asp_index.hh"
+#include "asp_parser.hh"
 
+#include <llvm/ADT/StringExtras.h>
 #include <llvm/Support/JSON.h>
+#include <llvm/Support/SHA256.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
-#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
 using ccls_asp::Fact;
-using ccls_asp::IndexResult;
+using ccls_asp::ParseResult;
 
 namespace {
 
@@ -26,21 +29,11 @@ struct Options {
   std::string workspace = ".";
   std::string command;
   std::string search_view;
-  std::string owner;
-  std::string query;
+  std::vector<std::string> owners;
   std::string selector;
   std::string compilation_database;
   bool code = false;
 };
-
-std::string lower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
-  return value;
-}
-
-bool contains_case_insensitive(const std::string &value, const std::string &term) {
-  return lower(value).find(lower(term)) != std::string::npos;
-}
 
 bool valid_language(const std::string &language) {
   return language == "c" || language == "cpp" || language == "objective-c";
@@ -64,9 +57,11 @@ Options parse_options(int argc, char **argv) {
       take(options.selector);
     else if (arg == "--compilation-database")
       take(options.compilation_database);
-    else if (arg == "--query")
-      take(options.query);
-    else if (arg == "--json") {
+    else if (arg == "--owner") {
+      std::string owner;
+      take(owner);
+      options.owners.push_back(std::move(owner));
+    } else if (arg == "--json") {
       // Compatibility flag. Provider stdout is always a JSON packet; ASP owns rendering.
     } else if (arg == "--code")
       options.code = true;
@@ -85,11 +80,7 @@ Options parse_options(int argc, char **argv) {
   else {
     options.command = positional[0];
     if (options.command == "search") {
-      options.search_view = positional.size() > 1 ? positional[1] : "prime";
-      if (options.search_view == "owner" && positional.size() > 2)
-        options.owner = positional[2];
-      if (options.search_view == "lexical" && positional.size() > 2)
-        options.query = positional[2];
+      options.search_view = positional.size() > 1 ? positional[1] : "ingest";
     } else if (options.command == "query" && options.selector.empty() && positional.size() > 1) {
       options.selector = positional[1];
     }
@@ -141,86 +132,136 @@ void print_json(llvm::json::Object packet) {
   llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(packet))) << "\n";
 }
 
-std::vector<const Fact *> selected_facts(const IndexResult &index, const Options &options) {
-  std::vector<const Fact *> selected;
-  for (const auto &fact : index.facts) {
-    if (!options.query.empty() && !contains_case_insensitive(fact.name, options.query) &&
-        !contains_case_insensitive(fact.qualified_name, options.query) &&
-        !contains_case_insensitive(fact.kind, options.query))
-      continue;
-    selected.push_back(&fact);
-    if (selected.size() == 200)
-      break;
+std::vector<const Fact *> all_facts(const ParseResult &result) {
+  std::vector<const Fact *> facts;
+  facts.reserve(result.facts.size());
+  for (const auto &fact : result.facts) {
+    facts.push_back(&fact);
   }
-  return selected;
+  return facts;
 }
 
-void emit_search_packet(const IndexResult &index, const Options &options) {
-  const auto selected = selected_facts(index, options);
-  auto packet = packet_base(options, "search/" + options.search_view);
-  packet["schemaId"] = "agent.semantic-protocols.semantic-search-packet";
-  packet["view"] = options.search_view;
-  packet["renderMode"] = "seeds";
-  llvm::json::Object header_fields;
-  header_fields["languageId"] = options.language;
-  header_fields["sourceAuthority"] = "clang-ast";
-  header_fields["compilationUnitCount"] = static_cast<std::int64_t>(index.compilation_units.size());
-  header_fields["factCount"] = static_cast<std::int64_t>(selected.size());
-  llvm::json::Object header;
-  header["kind"] = "search-" + options.language;
-  header["fields"] = std::move(header_fields);
-  packet["header"] = std::move(header);
-  packet["nodes"] = llvm::json::Array();
-  packet["edges"] = llvm::json::Array();
-  packet["findings"] = llvm::json::Array();
-  packet["nextActions"] = llvm::json::Array();
+std::string sha256_file(const fs::path &path) {
+  std::ifstream input(path, std::ios::binary);
+  std::ostringstream content;
+  content << input.rdbuf();
+  llvm::SHA256 hash;
+  hash.update(content.str());
+  return llvm::toHex(hash.final(), true);
+}
+
+llvm::json::Array query_keys_for(const Fact &fact) {
+  std::set<std::string> keys{fact.name, fact.qualified_name, fact.kind};
+  if (!fact.target.empty())
+    keys.insert(fact.target);
+  llvm::json::Array result;
+  for (const auto &key : keys) {
+    if (!key.empty())
+      result.push_back(key);
+  }
+  return result;
+}
+
+llvm::json::Array query_keys_for(const ccls_asp::DependencyUsage &usage) {
+  llvm::json::Array result;
+  for (const auto &key : usage.query_keys) {
+    if (!key.empty())
+      result.push_back(key);
+  }
+  return result;
+}
+
+void emit_ingest_packet(const ParseResult &result, const Options &options) {
+  const auto selected = all_facts(result);
+  const fs::path root = fs::weakly_canonical(options.workspace);
+  std::set<std::string> owner_paths(result.translation_units.begin(), result.translation_units.end());
+  for (const Fact *fact : selected)
+    owner_paths.insert(fact->location.path);
+
+  llvm::SHA256 generation_hash;
+  generation_hash.update(options.language);
+  llvm::json::Array file_hashes;
+  for (const auto &path : owner_paths) {
+    const std::string digest = sha256_file(root / path);
+    generation_hash.update(path);
+    generation_hash.update(digest);
+    llvm::json::Object file_hash;
+    file_hash["path"] = path;
+    file_hash["sha256"] = digest;
+    file_hash["source"] = "workspace";
+    file_hashes.push_back(std::move(file_hash));
+  }
 
   llvm::json::Array owners;
-  llvm::json::Array hits;
-  llvm::json::Array items;
-  std::vector<std::string> seen_owners;
-  for (const Fact *fact : selected) {
-    if (std::find(seen_owners.begin(), seen_owners.end(), fact->location.path) == seen_owners.end()) {
-      seen_owners.push_back(fact->location.path);
-      llvm::json::Object owner;
-      owner["path"] = fact->location.path;
-      owner["role"] = "source";
-      owner["public"] = true;
-      owner["fields"] = llvm::json::Object{{"languageId", options.language}, {"sourceAuthority", "clang-ast"}};
-      owners.push_back(std::move(owner));
+  for (const auto &path : owner_paths) {
+    std::set<std::string> keys{path};
+    for (const Fact *fact : selected) {
+      if (fact->location.path != path)
+        continue;
+      keys.insert(fact->name);
+      keys.insert(fact->qualified_name);
+      keys.insert(fact->kind);
     }
-    llvm::json::Object hit;
-    hit["kind"] = fact->kind;
-    hit["ownerPath"] = fact->location.path;
-    hit["symbol"] = fact->qualified_name;
-    hit["location"] = location_for(*fact);
-    hit["score"] = 1.0;
-    hit["reason"] = "clang-ast";
-    hit["fields"] = fields_for(*fact, options.language);
-    hits.push_back(std::move(hit));
-
-    llvm::json::Object item;
-    item["name"] = fact->name;
-    item["kind"] = fact->kind;
-    item["ownerPath"] = fact->location.path;
-    item["location"] = location_for(*fact);
-    item["fields"] = fields_for(*fact, options.language);
-    items.push_back(std::move(item));
+    llvm::json::Array query_keys;
+    for (const auto &key : keys) {
+      if (!key.empty())
+        query_keys.push_back(key);
+    }
+    llvm::json::Object owner;
+    owner["ownerPath"] = path;
+    owner["ownerKind"] = "source";
+    owner["sourceAuthority"] = "clang-ast";
+    owner["queryKeys"] = std::move(query_keys);
+    owners.push_back(std::move(owner));
   }
+
+  llvm::json::Array symbols;
+  for (const Fact *fact : selected) {
+    llvm::json::Object symbol;
+    symbol["ownerPath"] = fact->location.path;
+    symbol["name"] = fact->name;
+    symbol["qualifiedName"] = fact->qualified_name;
+    symbol["kind"] = fact->kind;
+    symbol["queryKeys"] = query_keys_for(*fact);
+    symbol["sourceLocator"] = fact->location.path + ":" + std::to_string(fact->location.start_line) + ":" +
+                              std::to_string(fact->location.end_line);
+    symbols.push_back(std::move(symbol));
+  }
+
+  llvm::json::Object packet;
+  packet["schemaId"] = "agent.semantic-protocols.semantic-structural-index";
+  packet["schemaVersion"] = "1";
+  packet["protocolId"] = "agent.semantic-protocols.semantic-language";
+  packet["protocolVersion"] = "1";
+  packet["generationId"] = "sha256:" + llvm::toHex(generation_hash.final(), true);
+  packet["languageId"] = options.language;
+  packet["providerId"] = "ccls-asp";
+  packet["providerVersion"] = "0.1.0";
+  packet["exportMethod"] = "index/structural";
+  packet["projectRoot"] = options.workspace;
+  packet["rawSourceStored"] = false;
+  packet["sourceAuthority"] = "clang-ast";
+  packet["fileHashes"] = std::move(file_hashes);
   packet["owners"] = std::move(owners);
-  packet["hits"] = std::move(hits);
-  packet["items"] = std::move(items);
-
-  llvm::json::Array notes;
-  for (const auto &error : index.errors) {
-    llvm::json::Object note;
-    note["kind"] = "parse-error";
-    note["message"] = error;
-    notes.push_back(std::move(note));
+  packet["symbols"] = std::move(symbols);
+  packet["symbolTotal"] = static_cast<std::int64_t>(selected.size());
+  llvm::json::Array dependency_usages;
+  for (const auto &usage : result.dependency_usages) {
+    llvm::json::Object dependency;
+    dependency["ownerPath"] = usage.owner_path;
+    dependency["packageName"] = usage.package_name;
+    dependency["importPath"] = usage.import_path;
+    dependency["source"] = "clang-preprocessor";
+    dependency["sourceLocator"] = usage.source_locator;
+    dependency["queryKeys"] = query_keys_for(usage);
+    dependency_usages.push_back(std::move(dependency));
   }
-  packet["notes"] = std::move(notes);
-  if (!options.query.empty())
-    packet["query"] = options.query;
+  packet["dependencyUsageTotal"] = static_cast<std::int64_t>(dependency_usages.size());
+  packet["dependencyUsages"] = std::move(dependency_usages);
+  packet["syntaxFacts"] = llvm::json::Array();
+
+  for (const auto &error : result.errors)
+    llvm::errs() << "ccls-asp: " << error << "\n";
   print_json(std::move(packet));
 }
 
@@ -276,7 +317,7 @@ std::string exact_source(const Options &options, const Selector &selector) {
   return output.str();
 }
 
-void emit_query_packet(const IndexResult &index, const Options &options, const Selector &selector) {
+void emit_query_packet(const ParseResult &index, const Options &options, const Selector &selector) {
   auto packet = packet_base(options, "query/exact-selector");
   packet["schemaId"] = "agent.semantic-protocols.semantic-query-packet";
   packet["query"] = selector.path;
@@ -318,8 +359,33 @@ void emit_query_packet(const IndexResult &index, const Options &options, const S
 void emit_guide_packet(const Options &options) {
   auto packet = packet_base(options, "guide");
   packet["sourceAuthority"] = "clang-ast";
-  packet["commands"] = llvm::json::Array{"search/prime", "search/owner", "search/lexical", "query/exact-selector"};
+  packet["commands"] = llvm::json::Array{"search/ingest", "query/exact-selector"};
   print_json(std::move(packet));
+}
+
+std::vector<std::string> ingest_owners(const Options &options) {
+  std::vector<std::string> owners = options.owners;
+  if (isatty(STDIN_FILENO))
+    return owners;
+
+  std::string line;
+  while (std::getline(std::cin, line)) {
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    if (line.empty())
+      continue;
+    std::string candidate = line;
+    const auto separator = line.find(':');
+    if (separator != std::string::npos) {
+      const std::string prefix = line.substr(0, separator);
+      if (fs::is_regular_file(fs::path(options.workspace) / prefix))
+        candidate = prefix;
+    }
+    owners.push_back(std::move(candidate));
+  }
+  std::sort(owners.begin(), owners.end());
+  owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+  return owners;
 }
 
 } // namespace
@@ -341,22 +407,22 @@ int main(int argc, char **argv) {
       const std::optional<std::string> compilation_database =
           options.compilation_database.empty() ? std::nullopt
                                                : std::optional<std::string>(options.compilation_database);
-      const auto index =
-          ccls_asp::build_index(options.workspace, selector.path, options.language, compilation_database);
-      emit_query_packet(index, options, selector);
-      return index.errors.empty() ? 0 : 1;
+      const auto result =
+          ccls_asp::parse_translation_units(options.workspace, {selector.path}, options.language, compilation_database);
+      emit_query_packet(result, options, selector);
+      return result.errors.empty() ? 0 : 1;
     }
 
     if (options.command == "search") {
-      std::optional<std::string> owner;
-      if (!options.owner.empty())
-        owner = options.owner;
+      if (options.search_view != "ingest")
+        throw std::runtime_error("provider search supports only ingest; use the asp language facade for search");
       const std::optional<std::string> compilation_database =
           options.compilation_database.empty() ? std::nullopt
                                                : std::optional<std::string>(options.compilation_database);
-      const auto index = ccls_asp::build_index(options.workspace, owner, options.language, compilation_database);
-      emit_search_packet(index, options);
-      return index.errors.empty() ? 0 : 1;
+      const auto result = ccls_asp::parse_translation_units(options.workspace, ingest_owners(options), options.language,
+                                                            compilation_database);
+      emit_ingest_packet(result, options);
+      return result.errors.empty() ? 0 : 1;
     }
 
     throw std::runtime_error("unknown command: " + options.command);

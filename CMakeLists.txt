@@ -16,7 +16,7 @@ execute_process(
 )
 
 add_executable(ccls-asp
-  src/asp_index.cc
+  src/asp_parser.cc
   src/main.cc
 )
 
@@ -32,6 +32,12 @@ target_compile_definitions(
   ccls-asp PRIVATE
   CCLS_ASP_CLANG_RESOURCE_DIR="${CCLS_ASP_CLANG_RESOURCE_DIR}"
 )
+string(REPLACE ";" "|" CCLS_ASP_CXX_IMPLICIT_INCLUDE_DIRS "${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES}")
+target_compile_definitions(
+  ccls-asp
+  PRIVATE CCLS_ASP_CXX_IMPLICIT_INCLUDE_DIRS="${CCLS_ASP_CXX_IMPLICIT_INCLUDE_DIRS}"
+)
+
 target_compile_options(ccls-asp PRIVATE -Wall -Wextra -Wpedantic)
 
 if(TARGET clang-cpp)
@@ -53,18 +59,18 @@ install(TARGETS ccls-asp RUNTIME DESTINATION bin)
 enable_testing()
 add_test(NAME ccls-asp-guide COMMAND ccls-asp guide --language cpp)
 add_test(
-  NAME ccls-asp-c-search
-  COMMAND ccls-asp --language c search prime
+  NAME ccls-asp-c-ingest
+  COMMAND ccls-asp --language c search ingest
           --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/c --json
 )
 add_test(
-  NAME ccls-asp-cpp-search
-  COMMAND ccls-asp --language cpp search lexical Widget owner tests
+  NAME ccls-asp-cpp-ingest
+  COMMAND ccls-asp --language cpp search ingest
           --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cpp --json
 )
 add_test(
-  NAME ccls-asp-objective-c-search
-  COMMAND ccls-asp --language objective-c search prime
+  NAME ccls-asp-objective-c-ingest
+  COMMAND ccls-asp --language objective-c search ingest
           --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/objective-c --json
 )
 add_test(
@@ -80,15 +86,15 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_json_only.cmake
 )
 add_test(
-  NAME ccls-asp-self-index
+  NAME ccls-asp-self-ingest
   COMMAND
-    ccls-asp --language cpp search owner src/asp_index.cc items
-    --query build_index --workspace ${CMAKE_CURRENT_SOURCE_DIR}
+    ccls-asp --language cpp search ingest --owner src/asp_parser.cc
+    --workspace ${CMAKE_CURRENT_SOURCE_DIR}
     --compilation-database ${CMAKE_CURRENT_BINARY_DIR} --json
 )
 set_tests_properties(
-  ccls-asp-self-index
+  ccls-asp-self-ingest
   PROPERTIES
-    PASS_REGULAR_EXPRESSION "\"qualifiedName\": \"ccls_asp::build_index\""
+    PASS_REGULAR_EXPRESSION "\"qualifiedName\": \"ccls_asp::parse_translation_units\""
     FAIL_REGULAR_EXPRESSION "parse-error|ClangTool failed|fatal error"
 )

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "asp_index.hh"
+#include "asp_parser.hh"
 
 #include <clang/AST/ASTConsumer.h>
 #include <clang/Tooling/ArgumentsAdjusters.h>
@@ -9,6 +9,8 @@
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendAction.h>
+#include <clang/Lex/PPCallbacks.h>
+#include <clang/Lex/Preprocessor.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
 #include <cstdlib>
@@ -36,6 +38,8 @@ struct CollectorState {
   std::string language;
   std::vector<Fact> facts;
   std::set<std::string> fact_keys;
+  std::vector<DependencyUsage> dependency_usages;
+  std::set<std::string> dependency_keys;
 };
 
 std::string normalize_path(const fs::path &path) { return path.lexically_normal().generic_string(); }
@@ -222,11 +226,51 @@ private:
   FactVisitor visitor_;
 };
 
+class DependencyCallbacks : public clang::PPCallbacks {
+public:
+  DependencyCallbacks(clang::SourceManager &source_manager, CollectorState &state)
+      : source_manager_(source_manager), state_(state) {}
+
+  void InclusionDirective(clang::SourceLocation hash_location, const clang::Token &, llvm::StringRef file_name, bool,
+                          clang::CharSourceRange, clang::OptionalFileEntryRef, llvm::StringRef, llvm::StringRef,
+                          const clang::Module *, bool, clang::SrcMgr::CharacteristicKind) override {
+    const auto owner_path = project_path(source_manager_, hash_location, state_.workspace);
+    if (!owner_path || !supports_source_path(*owner_path, state_.language))
+      return;
+    const std::string import_path = file_name.str();
+    if (import_path.empty())
+      return;
+    const auto separator = import_path.find('/');
+    const std::string package_name = import_path.substr(0, separator);
+    const auto line = line_for(source_manager_, hash_location);
+    const std::string key = *owner_path + ":" + std::to_string(line) + ":" + import_path;
+    if (!state_.dependency_keys.insert(key).second)
+      return;
+    std::set<std::string> keys{package_name, import_path};
+    const fs::path include_path(import_path);
+    keys.insert(include_path.filename().string());
+    keys.insert(include_path.stem().string());
+    state_.dependency_usages.push_back({
+        *owner_path,
+        package_name,
+        import_path,
+        *owner_path + ":" + std::to_string(line) + ":" + std::to_string(line),
+        {keys.begin(), keys.end()},
+    });
+  }
+
+private:
+  clang::SourceManager &source_manager_;
+  CollectorState &state_;
+};
+
 class FactAction : public clang::ASTFrontendAction {
 public:
   explicit FactAction(CollectorState &state) : state_(state) {}
 
   std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance &compiler, llvm::StringRef) override {
+    compiler.getPreprocessor().addPPCallbacks(
+        std::make_unique<DependencyCallbacks>(compiler.getSourceManager(), state_));
     return std::make_unique<FactConsumer>(compiler.getASTContext(), state_);
   }
 
@@ -302,6 +346,19 @@ static std::vector<std::string> environment_compiler_args() {
   append_flags(std::getenv("NIX_CFLAGS_COMPILE"));
   append_flags(std::getenv("CCLS_ASP_EXTRA_CLANG_ARGS"));
 
+  std::string_view implicit_include_dirs = CCLS_ASP_CXX_IMPLICIT_INCLUDE_DIRS;
+  while (!implicit_include_dirs.empty()) {
+    const auto separator = implicit_include_dirs.find('|');
+    const auto include_dir = implicit_include_dirs.substr(0, separator);
+    if (!include_dir.empty()) {
+      args.emplace_back("-isystem");
+      args.emplace_back(include_dir);
+    }
+    if (separator == std::string_view::npos)
+      break;
+    implicit_include_dirs.remove_prefix(separator + 1);
+  }
+
   // Nix's compiler wrapper adds c++/v1 only when its executable runs.
   // ClangTool consumes compilation commands in-process, so materialize it.
   for (std::size_t index = 0; index + 1 < args.size(); ++index) {
@@ -324,9 +381,10 @@ static std::vector<std::string> environment_compiler_args() {
   return args;
 }
 
-IndexResult build_index(const std::string &workspace, const std::optional<std::string> &owner,
-                        const std::string &language, const std::optional<std::string> &compilation_database) {
-  IndexResult result;
+ParseResult parse_translation_units(const std::string &workspace, const std::vector<std::string> &owners,
+                                    const std::string &language,
+                                    const std::optional<std::string> &compilation_database) {
+  ParseResult result;
   std::error_code ec;
   fs::path root = fs::weakly_canonical(fs::path(workspace), ec);
   if (ec || !fs::is_directory(root)) {
@@ -334,7 +392,7 @@ IndexResult build_index(const std::string &workspace, const std::optional<std::s
     return result;
   }
 
-  CollectorState state{root, language, {}, {}};
+  CollectorState state{root, language, {}, {}, {}, {}};
   std::string database_error;
   fs::path database_root = root;
   if (compilation_database) {
@@ -346,13 +404,15 @@ IndexResult build_index(const std::string &workspace, const std::optional<std::s
   auto database = clang::tooling::CompilationDatabase::autoDetectFromDirectory(database_root.string(), database_error);
 
   std::vector<std::string> files;
-  if (owner) {
-    fs::path selected = fs::path(*owner);
-    if (selected.is_relative())
-      selected = root / selected;
-    selected = fs::weakly_canonical(selected, ec);
-    if (!ec && fs::is_regular_file(selected))
-      files.push_back(selected.string());
+  if (!owners.empty()) {
+    for (const auto &owner : owners) {
+      fs::path selected = fs::path(owner);
+      if (selected.is_relative())
+        selected = root / selected;
+      selected = fs::weakly_canonical(selected, ec);
+      if (!ec && fs::is_regular_file(selected))
+        files.push_back(selected.string());
+    }
   } else if (database) {
     files = database->getAllFiles();
     files.erase(std::remove_if(files.begin(), files.end(),
@@ -367,7 +427,7 @@ IndexResult build_index(const std::string &workspace, const std::optional<std::s
   for (const auto &file : files) {
     const auto relative = fs::relative(fs::path(file), root, ec);
     if (!ec && !relative.native().starts_with(".."))
-      result.compilation_units.push_back(normalize_path(relative));
+      result.translation_units.push_back(normalize_path(relative));
   }
 
   FactActionFactory factory(state);
@@ -398,6 +458,12 @@ IndexResult build_index(const std::string &workspace, const std::optional<std::s
            std::tie(right.location.path, right.location.start_line, right.kind, right.qualified_name);
   });
   result.facts = std::move(state.facts);
+  std::sort(state.dependency_usages.begin(), state.dependency_usages.end(),
+            [](const DependencyUsage &left, const DependencyUsage &right) {
+              return std::tie(left.owner_path, left.source_locator, left.import_path) <
+                     std::tie(right.owner_path, right.source_locator, right.import_path);
+            });
+  result.dependency_usages = std::move(state.dependency_usages);
   return result;
 }
 

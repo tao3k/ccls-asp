@@ -24,15 +24,24 @@ struct Fact {
   SourceRange location;
 };
 
-struct IndexResult {
+struct DependencyUsage {
+  std::string owner_path;
+  std::string package_name;
+  std::string import_path;
+  std::string source_locator;
+  std::vector<std::string> query_keys;
+};
+
+struct ParseResult {
   std::vector<Fact> facts;
-  std::vector<std::string> compilation_units;
+  std::vector<DependencyUsage> dependency_usages;
+  std::vector<std::string> translation_units;
   std::vector<std::string> errors;
 };
 
-IndexResult build_index(const std::string &workspace, const std::optional<std::string> &owner,
-                        const std::string &language,
-                        const std::optional<std::string> &compilation_database = std::nullopt);
+ParseResult parse_translation_units(const std::string &workspace, const std::vector<std::string> &owners,
+                                    const std::string &language,
+                                    const std::optional<std::string> &compilation_database = std::nullopt);
 
 bool supports_source_path(const std::string &path, const std::string &language);
 

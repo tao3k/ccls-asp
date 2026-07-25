@@ -15,7 +15,11 @@ function(assert_json_packet NAME EXPECTED_METHOD EXPECTED_SCHEMA)
     message(FATAL_ERROR "${NAME} failed (${result}): ${error}")
   endif()
 
-  string(JSON method ERROR_VARIABLE json_error GET "${output}" method)
+  if(EXPECTED_METHOD STREQUAL "index/structural")
+    string(JSON method ERROR_VARIABLE json_error GET "${output}" exportMethod)
+  else()
+    string(JSON method ERROR_VARIABLE json_error GET "${output}" method)
+  endif()
   if(json_error OR NOT method STREQUAL EXPECTED_METHOD)
     message(FATAL_ERROR "${NAME} did not emit the expected JSON method: ${output}")
   endif()
@@ -33,8 +37,8 @@ assert_json_packet(
   --language cpp guide
 )
 assert_json_packet(
-  search search/lexical agent.semantic-protocols.semantic-search-packet
-  --language cpp search lexical Widget owner tests
+  ingest index/structural agent.semantic-protocols.semantic-structural-index
+  --language cpp search ingest
   --workspace "${FIXTURES}/cpp"
 )
 assert_json_packet(
