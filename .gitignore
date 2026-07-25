@@ -1,8 +1,10 @@
 /*
 !/.github/
 !/index_tests/
+!/provider/
+!/schemas/
 !/src/
-!/third_party/
+!/tests/
 !/.appveyor.yml
 !/.clang-format
 !/CMakeLists.txt

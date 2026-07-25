@@ -1,0 +1,42 @@
+{
+  "schemaId": "agent.semantic-protocols.hook.provider-manifest",
+  "schemaVersion": "1",
+  "protocolId": "agent.semantic-protocols.hook",
+  "protocolVersion": "1",
+  "manifestId": "agent.semantic-protocols.providers.c.ccls-asp",
+  "manifestVersion": "v1",
+  "languageId": "c",
+  "providerId": "ccls-asp",
+  "namespace": "agent.semantic-protocols.languages.c.ccls-asp",
+  "binary": "ccls-asp",
+  "commandPrefixArgs": ["--language", "c"],
+  "execution": "external-process",
+  "source": {
+    "defaultExtensions": [".c", ".h"],
+    "defaultConfigFiles": ["compile_commands.json", ".ccls", "CMakeLists.txt", "meson.build"],
+    "defaultSourceRoots": ["src", "include", "tests"],
+    "defaultIgnoredPathPrefixes": ["build", "cmake-build-debug", "cmake-build-release"],
+    "defaultProjectMarkers": ["compile_commands.json", ".ccls", "CMakeLists.txt", "meson.build"],
+    "defaultDependencyMarkers": ["compile_commands.json", "CMakeLists.txt", "meson.build"]
+  },
+  "searchCapabilities": {
+    "semanticFacts": true,
+    "dependencyTopology": false,
+    "dependencyTopologyMetadata": false
+  },
+  "policy": {
+    "directSourceRead": "block",
+    "bulkSourceDump": "block",
+    "rawSourceSearch": "block",
+    "agentSearchJson": "block"
+  },
+  "routes": {
+    "prime": {"argv": ["ccls-asp", "--language", "c", "search", "prime", "--workspace", "{projectRoot}", "--view", "seeds"]},
+    "owner": {"argv": ["ccls-asp", "--language", "c", "search", "owner", "{path}", "--workspace", "{projectRoot}", "--view", "seeds"]},
+    "lexical": {"argv": ["ccls-asp", "--language", "c", "search", "lexical", "{query}", "owner", "tests", "--workspace", "{projectRoot}", "--view", "seeds"]},
+    "query": {"argv": ["ccls-asp", "--language", "c", "query", "--from-hook", "direct-source-read", "--selector", "{selector}", "{termArgs}", "--workspace", "{projectRoot}", "--view", "seeds"]},
+    "ingest": {"argv": ["ccls-asp", "--language", "c", "search", "ingest", "--workspace", "{projectRoot}", "--view", "seeds"], "stdinMode": "pipe-candidates"},
+    "checkChanged": {"argv": ["ccls-asp", "--language", "c", "check", "changed", "--workspace", "{projectRoot}"]},
+    "guide": {"argv": ["ccls-asp", "--language", "c", "guide", "--workspace", "{projectRoot}"]}
+  }
+}

@@ -1,138 +1,398 @@
-// Copyright 2017-2018 ccls Authors
 // SPDX-License-Identifier: Apache-2.0
+#include "asp_index.hh"
 
-#include "log.hh"
-#include "pipeline.hh"
-#include "platform.hh"
-#include "serializer.hh"
-#include "test.hh"
-#include "working_files.hh"
+#include <llvm/Support/JSON.h>
+#include <llvm/Support/raw_ostream.h>
 
-#include <clang/Basic/Version.h>
-#include <llvm/Support/CommandLine.h>
-#include <llvm/Support/CrashRecoveryContext.h>
-#include <llvm/Support/FileSystem.h>
-#include <llvm/Support/Process.h>
-#include <llvm/Support/Program.h>
-#include <llvm/Support/Signals.h>
-
-#include <rapidjson/document.h>
-#include <rapidjson/error/en.h>
-
-#include <stdio.h>
-#include <stdlib.h>
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <optional>
+#include <sstream>
 #include <string>
-#include <unordered_map>
+#include <string_view>
 #include <vector>
 
-using namespace ccls;
-using namespace llvm;
-using namespace llvm::cl;
-
-namespace ccls {
-std::vector<std::string> g_init_options;
-}
+namespace fs = std::filesystem;
+using ccls_asp::Fact;
+using ccls_asp::IndexResult;
 
 namespace {
-OptionCategory C("ccls options");
 
-opt<bool> opt_help("h", desc("Alias for -help"), cat(C));
-opt<int> opt_verbose("v", desc("verbosity, from -3 (fatal) to 2 (verbose)"), init(0), cat(C));
-opt<std::string> opt_test_index("test-index", ValueOptional, init("!"), desc("run index tests"), cat(C));
+struct Options {
+  std::string language = "cpp";
+  std::string workspace = ".";
+  std::string command;
+  std::string search_view;
+  std::string owner;
+  std::string query;
+  std::string selector;
+  bool json = false;
+  bool code = false;
+};
 
-opt<std::string> opt_index("index", desc("standalone mode: index a project and exit"), value_desc("root"), cat(C));
-list<std::string> opt_init("init", desc("extra initialization options in JSON"), cat(C));
-opt<std::string> opt_log_file("log-file", desc("stderr or log file"), value_desc("file"), init("stderr"), cat(C));
-opt<bool> opt_log_file_append("log-file-append", desc("append to log file"), cat(C));
+std::string lower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
+  return value;
+}
 
-void closeLog() { fclose(ccls::log::file); }
+bool contains_case_insensitive(const std::string &value, const std::string &term) {
+  return lower(value).find(lower(term)) != std::string::npos;
+}
+
+bool valid_language(const std::string &language) {
+  return language == "c" || language == "cpp" || language == "objective-c";
+}
+
+Options parse_options(int argc, char **argv) {
+  Options options;
+  std::vector<std::string> positional;
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    auto take = [&](std::string &target) {
+      if (i + 1 >= argc)
+        throw std::runtime_error("missing value after " + arg);
+      target = argv[++i];
+    };
+    if (arg == "--language")
+      take(options.language);
+    else if (arg == "--workspace")
+      take(options.workspace);
+    else if (arg == "--selector")
+      take(options.selector);
+    else if (arg == "--json")
+      options.json = true;
+    else if (arg == "--code")
+      options.code = true;
+    else if (arg == "--view") {
+      std::string ignored;
+      take(ignored);
+    } else if (arg == "--from-hook" || arg == "--surface") {
+      std::string ignored;
+      take(ignored);
+    } else if (!arg.starts_with("--"))
+      positional.push_back(std::move(arg));
+  }
+
+  if (positional.empty())
+    options.command = "guide";
+  else {
+    options.command = positional[0];
+    if (options.command == "search") {
+      options.search_view = positional.size() > 1 ? positional[1] : "prime";
+      if (options.search_view == "owner" && positional.size() > 2)
+        options.owner = positional[2];
+      if (options.search_view == "lexical" && positional.size() > 2)
+        options.query = positional[2];
+    } else if (options.command == "check") {
+      options.search_view = positional.size() > 1 ? positional[1] : "changed";
+    } else if (options.command == "query" && options.selector.empty() && positional.size() > 1) {
+      options.selector = positional[1];
+    }
+  }
+  return options;
+}
+
+llvm::json::Object fields_for(const Fact &fact, const std::string &language) {
+  llvm::json::Object fields;
+  fields["languageId"] = language;
+  fields["providerId"] = "ccls-asp";
+  fields["semanticFactKind"] = fact.kind;
+  fields["role"] = fact.role;
+  fields["qualifiedName"] = fact.qualified_name;
+  fields["sourceAuthority"] = "clang-ast";
+  if (!fact.type.empty())
+    fields["type"] = fact.type;
+  if (!fact.target.empty())
+    fields["target"] = fact.target;
+  return fields;
+}
+
+llvm::json::Object location_for(const Fact &fact) {
+  llvm::json::Object location;
+  location["path"] = fact.location.path;
+  location["lineRange"] = std::to_string(fact.location.start_line) + ":" + std::to_string(fact.location.end_line);
+  return location;
+}
+
+std::string namespace_for(const std::string &language) {
+  return "agent.semantic-protocols.languages." + language + ".ccls-asp";
+}
+
+llvm::json::Object packet_base(const Options &options, const std::string &method) {
+  llvm::json::Object packet;
+  packet["schemaVersion"] = "1";
+  packet["protocolId"] = "agent.semantic-protocols.semantic-language";
+  packet["protocolVersion"] = "1";
+  packet["languageId"] = options.language;
+  packet["providerId"] = "ccls-asp";
+  packet["binary"] = "ccls-asp";
+  packet["namespace"] = namespace_for(options.language);
+  packet["method"] = method;
+  packet["projectRoot"] = options.workspace;
+  return packet;
+}
+
+void print_json(llvm::json::Object packet) {
+  llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(packet))) << "\n";
+}
+
+std::vector<const Fact *> selected_facts(const IndexResult &index, const Options &options) {
+  std::vector<const Fact *> selected;
+  for (const auto &fact : index.facts) {
+    if (!options.query.empty() && !contains_case_insensitive(fact.name, options.query) &&
+        !contains_case_insensitive(fact.qualified_name, options.query) &&
+        !contains_case_insensitive(fact.kind, options.query))
+      continue;
+    selected.push_back(&fact);
+    if (selected.size() == 200)
+      break;
+  }
+  return selected;
+}
+
+void render_search_json(const IndexResult &index, const Options &options) {
+  const auto selected = selected_facts(index, options);
+  auto packet = packet_base(options, "search/" + options.search_view);
+  packet["schemaId"] = "agent.semantic-protocols.semantic-search-packet";
+  packet["view"] = options.search_view;
+  packet["renderMode"] = "seeds";
+  llvm::json::Object header_fields;
+  header_fields["languageId"] = options.language;
+  header_fields["sourceAuthority"] = "clang-ast";
+  header_fields["compilationUnitCount"] = static_cast<std::int64_t>(index.compilation_units.size());
+  header_fields["factCount"] = static_cast<std::int64_t>(selected.size());
+  llvm::json::Object header;
+  header["kind"] = "search-" + options.language;
+  header["fields"] = std::move(header_fields);
+  packet["header"] = std::move(header);
+  packet["nodes"] = llvm::json::Array();
+  packet["edges"] = llvm::json::Array();
+  packet["findings"] = llvm::json::Array();
+  packet["nextActions"] = llvm::json::Array();
+
+  llvm::json::Array owners;
+  llvm::json::Array hits;
+  llvm::json::Array items;
+  std::vector<std::string> seen_owners;
+  for (const Fact *fact : selected) {
+    if (std::find(seen_owners.begin(), seen_owners.end(), fact->location.path) == seen_owners.end()) {
+      seen_owners.push_back(fact->location.path);
+      llvm::json::Object owner;
+      owner["path"] = fact->location.path;
+      owner["role"] = "source";
+      owner["public"] = true;
+      owner["fields"] = llvm::json::Object{{"languageId", options.language}, {"sourceAuthority", "clang-ast"}};
+      owners.push_back(std::move(owner));
+    }
+    llvm::json::Object hit;
+    hit["kind"] = fact->kind;
+    hit["ownerPath"] = fact->location.path;
+    hit["symbol"] = fact->qualified_name;
+    hit["location"] = location_for(*fact);
+    hit["score"] = 1.0;
+    hit["reason"] = "clang-ast";
+    hit["fields"] = fields_for(*fact, options.language);
+    hits.push_back(std::move(hit));
+
+    llvm::json::Object item;
+    item["name"] = fact->name;
+    item["kind"] = fact->kind;
+    item["ownerPath"] = fact->location.path;
+    item["location"] = location_for(*fact);
+    item["fields"] = fields_for(*fact, options.language);
+    items.push_back(std::move(item));
+  }
+  packet["owners"] = std::move(owners);
+  packet["hits"] = std::move(hits);
+  packet["items"] = std::move(items);
+
+  llvm::json::Array notes;
+  for (const auto &error : index.errors) {
+    llvm::json::Object note;
+    note["kind"] = "parse-error";
+    note["message"] = error;
+    notes.push_back(std::move(note));
+  }
+  packet["notes"] = std::move(notes);
+  if (!options.query.empty())
+    packet["query"] = options.query;
+  print_json(std::move(packet));
+}
+
+void render_search_text(const IndexResult &index, const Options &options) {
+  const auto selected = selected_facts(index, options);
+  std::cout << "[search-" << options.language << "] view=" << options.search_view
+            << " authority=clang-ast units=" << index.compilation_units.size() << " facts=" << selected.size() << "\n";
+  for (const Fact *fact : selected)
+    std::cout << "item=" << fact->kind << " name=" << fact->qualified_name << " owner=" << fact->location.path
+              << " lines=" << fact->location.start_line << ":" << fact->location.end_line << " role=" << fact->role
+              << "\n";
+  for (const auto &error : index.errors)
+    std::cout << "note=parse-error message=" << error << "\n";
+}
+
+struct Selector {
+  std::string path;
+  std::uint32_t start = 1;
+  std::uint32_t end = 0;
+};
+
+Selector parse_selector(const std::string &selector) {
+  Selector parsed{selector, 1, 0};
+  const auto last = selector.rfind(':');
+  if (last == std::string::npos)
+    return parsed;
+  const auto previous = selector.rfind(':', last - 1);
+  if (previous == std::string::npos)
+    return parsed;
+  try {
+    parsed.start = std::stoul(selector.substr(previous + 1, last - previous - 1));
+    parsed.end = std::stoul(selector.substr(last + 1));
+    parsed.path = selector.substr(0, previous);
+  } catch (const std::exception &) {
+    parsed = {selector, 1, 0};
+  }
+  return parsed;
+}
+
+std::string exact_source(const Options &options, const Selector &selector) {
+  std::error_code ec;
+  const fs::path root = fs::weakly_canonical(options.workspace, ec);
+  fs::path target = selector.path;
+  if (target.is_relative())
+    target = root / target;
+  target = fs::weakly_canonical(target, ec);
+  const auto relative = fs::relative(target, root, ec);
+  if (ec || relative.empty() || relative.native().starts_with(".."))
+    throw std::runtime_error("selector escapes workspace");
+
+  std::ifstream input(target);
+  if (!input)
+    throw std::runtime_error("cannot read selector " + selector.path);
+  std::ostringstream output;
+  std::string line;
+  std::uint32_t line_number = 0;
+  while (std::getline(input, line)) {
+    ++line_number;
+    if (line_number < selector.start)
+      continue;
+    if (selector.end && line_number > selector.end)
+      break;
+    output << line << "\n";
+  }
+  return output.str();
+}
+
+void render_query_json(const IndexResult &index, const Options &options, const Selector &selector) {
+  auto packet = packet_base(options, "query/exact-selector");
+  packet["schemaId"] = "agent.semantic-protocols.semantic-query-packet";
+  packet["query"] = selector.path;
+  packet["queryTerms"] = llvm::json::Array{selector.path};
+  packet["ownerPath"] = selector.path;
+  packet["outputMode"] = "outline";
+  packet["truncated"] = false;
+  llvm::json::Array matches;
+  for (const auto &fact : index.facts) {
+    if (fact.location.path != selector.path)
+      continue;
+    if (selector.end && (fact.location.end_line < selector.start || fact.location.start_line > selector.end))
+      continue;
+    llvm::json::Object match;
+    match["name"] = fact.name;
+    match["kind"] = fact.kind;
+    match["visibility"] = "unknown";
+    match["doc"] = false;
+    match["location"] = location_for(fact);
+    match["read"] = fact.location.path + ":" + std::to_string(fact.location.start_line) + ":" +
+                    std::to_string(fact.location.end_line);
+    match["truncated"] = false;
+    match["fields"] = fields_for(fact, options.language);
+    matches.push_back(std::move(match));
+  }
+  packet["matchCount"] = static_cast<std::int64_t>(matches.size());
+  packet["matches"] = std::move(matches);
+  llvm::json::Object safety;
+  safety["level"] = "read-safe";
+  safety["reason"] = "Clang AST projection is navigation evidence; exact source remains the patch preimage";
+  safety["exactRead"] = selector.path + ":" + std::to_string(selector.start) + ":" +
+                        std::to_string(selector.end ? selector.end : selector.start);
+  packet["patchSafety"] = std::move(safety);
+  print_json(std::move(packet));
+}
+
+void render_guide(const Options &options) {
+  std::cout << "provider=ccls-asp language=" << options.language << " authority=clang-ast\n"
+            << "prime=ccls-asp --language " << options.language << " search prime --workspace . --view seeds\n"
+            << "owner=ccls-asp --language " << options.language
+            << " search owner <path> items --workspace . --view seeds\n"
+            << "lexical=ccls-asp --language " << options.language
+            << " search lexical <term> owner tests --workspace . --view seeds\n"
+            << "query=ccls-asp --language " << options.language
+            << " query --selector <path-or-range> --workspace . --json\n"
+            << "code=ccls-asp --language " << options.language
+            << " query --selector <path:start:end> --workspace . --code\n";
+}
 
 } // namespace
 
 int main(int argc, char **argv) {
-  traceMe();
-  sys::PrintStackTraceOnErrorSignal(argv[0]);
-  cl::SetVersionPrinter(
-      [](raw_ostream &os) { os << clang::getClangToolFullVersion("ccls version " CCLS_VERSION "\nclang") << "\n"; });
-
-  cl::HideUnrelatedOptions(C);
-
-  ParseCommandLineOptions(argc, argv,
-                          "C/C++/Objective-C language server\n\n"
-                          "See more on https://github.com/MaskRay/ccls/wiki");
-
-  if (opt_help) {
-    PrintHelpMessage();
-    return 0;
-  }
-  ccls::log::verbosity = ccls::log::Verbosity(opt_verbose.getValue());
-
-  pipeline::init();
-  const char *env = getenv("CCLS_CRASH_RECOVERY");
-  if (!env || strcmp(env, "0") != 0)
-    CrashRecoveryContext::Enable();
-
-  bool language_server = true;
-
-  if (opt_log_file.size()) {
-    ccls::log::file =
-        opt_log_file == "stderr" ? stderr : fopen(opt_log_file.c_str(), opt_log_file_append ? "ab" : "wb");
-    if (!ccls::log::file) {
-      fprintf(stderr, "failed to open %s\n", opt_log_file.c_str());
-      return 2;
+  try {
+    const Options options = parse_options(argc, argv);
+    if (!valid_language(options.language))
+      throw std::runtime_error("--language must be c, cpp, or objective-c");
+    if (options.command == "guide" || options.command == "help") {
+      render_guide(options);
+      return 0;
     }
-    setbuf(ccls::log::file, NULL);
-    atexit(closeLog);
-  }
 
-  if (opt_test_index != "!") {
-    language_server = false;
-    if (!ccls::runIndexTests(opt_test_index, sys::Process::StandardInIsUserInput()))
-      return 1;
-  }
-
-  if (language_server) {
-    if (!opt_init.empty()) {
-      // We check syntax error here but override client-side
-      // initializationOptions in messages/initialize.cc
-      g_init_options = opt_init;
-      rapidjson::Document reader;
-      for (const std::string &str : g_init_options) {
-        rapidjson::ParseResult ok = reader.Parse(str.c_str());
-        if (!ok) {
-          fprintf(stderr, "Failed to parse --init as JSON: %s (%zd)\n", rapidjson::GetParseError_En(ok.Code()),
-                  ok.Offset());
-          return 1;
-        }
-        JsonReader json_reader{&reader};
-        try {
-          Config config;
-          reflect(json_reader, config);
-        } catch (std::invalid_argument &e) {
-          fprintf(stderr, "Failed to parse --init %s, expected %s\n",
-                  static_cast<JsonReader &>(json_reader).getPath().c_str(), e.what());
-          return 1;
-        }
+    if (options.command == "query") {
+      if (options.selector.empty())
+        throw std::runtime_error("query requires --selector");
+      const Selector selector = parse_selector(options.selector);
+      if (options.code) {
+        std::cout << exact_source(options, selector);
+        return 0;
       }
+      const auto index = ccls_asp::build_index(options.workspace, selector.path, options.language);
+      if (options.json)
+        render_query_json(index, options, selector);
+      else
+        render_search_text(index, options);
+      return index.errors.empty() ? 0 : 1;
     }
 
-    sys::ChangeStdinToBinary();
-    sys::ChangeStdoutToBinary();
-    if (opt_index.size()) {
-      SmallString<256> root(opt_index);
-      sys::fs::make_absolute(root);
-      pipeline::standalone(std::string(root.data(), root.size()));
-    } else {
-      // The thread that reads from stdin and dispatchs commands to the main
-      // thread.
-      pipeline::launchStdin();
-      // The thread that writes responses from the main thread to stdout.
-      pipeline::launchStdout();
-      // Main thread which also spawns indexer threads upon the "initialize"
-      // request.
-      pipeline::mainLoop();
+    if (options.command == "search") {
+      std::optional<std::string> owner;
+      if (!options.owner.empty())
+        owner = options.owner;
+      const auto index = ccls_asp::build_index(options.workspace, owner, options.language);
+      if (options.json)
+        render_search_json(index, options);
+      else
+        render_search_text(index, options);
+      return index.errors.empty() ? 0 : 1;
     }
+
+    if (options.command == "check") {
+      const auto index = ccls_asp::build_index(options.workspace, std::nullopt, options.language);
+      if (options.json) {
+        render_search_json(index, options);
+      } else {
+        std::cout << "status=" << (index.errors.empty() ? "passed" : "failed") << " language=" << options.language
+                  << " units=" << index.compilation_units.size() << " facts=" << index.facts.size()
+                  << " errors=" << index.errors.size() << "\n";
+        for (const auto &error : index.errors)
+          std::cout << "error=" << error << "\n";
+      }
+      return index.errors.empty() ? 0 : 1;
+    }
+
+    throw std::runtime_error("unknown command: " + options.command);
+  } catch (const std::exception &error) {
+    std::cerr << "ccls-asp: " << error.what() << "\n";
+    return 2;
   }
-
-  return 0;
 }
