@@ -12,6 +12,8 @@ foreach(expected
         "\"kind\": \"declaration-reference\""
         "\"kind\": \"member-reference\""
         "\"kind\": \"parameter\""
+        "\"source\": \"native-parser\""
+        "\"relations\":"
         "\"targetSymbolId\":")
   string(FIND "${c_output}" "${expected}" found)
   if(found EQUAL -1)

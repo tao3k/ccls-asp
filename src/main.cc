@@ -170,6 +170,95 @@ llvm::json::Array query_keys_for(const Fact &fact) {
   return result;
 }
 
+std::string syntax_kind_for(const Fact &fact) {
+  if (fact.kind == "function")
+    return "function";
+  if (fact.kind == "method" || fact.kind == "constructor" || fact.kind == "destructor" ||
+      fact.kind == "objc-instance-method" || fact.kind == "objc-class-method")
+    return "method";
+  if (fact.kind == "class")
+    return "class";
+  if (fact.kind == "struct" || fact.kind == "union")
+    return "struct";
+  if (fact.kind == "enum" || fact.kind == "enum-member")
+    return "enum";
+  if (fact.kind == "objc-interface" || fact.kind == "objc-protocol")
+    return "interface";
+  if (fact.kind == "field")
+    return "field";
+  if (fact.kind == "objc-property")
+    return "property";
+  if (fact.kind == "parameter")
+    return "argument";
+  if (fact.kind == "variable" || fact.kind == "local-variable")
+    return "binding";
+  if (fact.kind == "call" || fact.kind == "objc-message")
+    return "call";
+  if (fact.kind == "type-alias" || fact.kind == "type-reference")
+    return "type";
+  return "custom";
+}
+
+std::string syntax_relation_kind_for(const Fact &fact) {
+  if (fact.kind == "call" || fact.kind == "objc-message")
+    return "calls";
+  if (fact.kind == "override" || fact.kind == "objc-protocol-conformance")
+    return "implements";
+  if (fact.role == "reference")
+    return "references";
+  return "related";
+}
+
+llvm::json::Object syntax_fact_for(const Fact &fact) {
+  llvm::json::Object syntax_fact;
+  const std::string location_id = fact.location.path + ":" + std::to_string(fact.location.start_line) + ":" +
+                                  std::to_string(fact.location.end_line);
+  const std::string identity = !fact.symbol_id.empty()
+                                   ? fact.symbol_id
+                                   : (!fact.target_symbol_id.empty() ? fact.target_symbol_id : fact.qualified_name);
+  syntax_fact["id"] = "clang:" + fact.kind + ":" + identity + "@" + location_id;
+  syntax_fact["kind"] = syntax_kind_for(fact);
+  syntax_fact["source"] = "native-parser";
+  syntax_fact["languageKind"] = fact.kind;
+  syntax_fact["name"] = fact.name;
+  if (!fact.qualified_name.empty())
+    syntax_fact["qualifiedName"] = fact.qualified_name;
+  syntax_fact["ownerPath"] = fact.location.path;
+  llvm::json::Object location;
+  location["path"] = fact.location.path;
+  location["lineRange"] = std::to_string(fact.location.start_line) + ":" + std::to_string(fact.location.end_line);
+  syntax_fact["location"] = std::move(location);
+  syntax_fact["visibility"] = "unknown";
+  syntax_fact["queryKeys"] = query_keys_for(fact);
+
+  llvm::json::Object fields;
+  fields["role"] = fact.role;
+  if (!fact.type.empty())
+    fields["type"] = fact.type;
+  if (!fact.symbol_id.empty())
+    fields["symbolId"] = fact.symbol_id;
+  if (!fact.target_symbol_id.empty())
+    fields["targetSymbolId"] = fact.target_symbol_id;
+  if (!fact.target.empty())
+    fields["target"] = fact.target;
+  syntax_fact["fields"] = std::move(fields);
+
+  if (!fact.target_symbol_id.empty() || !fact.target.empty()) {
+    llvm::json::Object relation;
+    relation["kind"] = syntax_relation_kind_for(fact);
+    relation["target"] = !fact.target_symbol_id.empty() ? fact.target_symbol_id : fact.target;
+    if (!fact.target.empty() && !fact.target_symbol_id.empty()) {
+      llvm::json::Object relation_fields;
+      relation_fields["displayTarget"] = fact.target;
+      relation["fields"] = std::move(relation_fields);
+    }
+    llvm::json::Array relations;
+    relations.push_back(std::move(relation));
+    syntax_fact["relations"] = std::move(relations);
+  }
+  return syntax_fact;
+}
+
 llvm::json::Array query_keys_for(const ccls_asp::DependencyUsage &usage) {
   llvm::json::Array result;
   for (const auto &key : usage.query_keys) {
@@ -272,7 +361,10 @@ void emit_ingest_packet(const ParseResult &result, const Options &options) {
   }
   packet["dependencyUsageTotal"] = static_cast<std::int64_t>(dependency_usages.size());
   packet["dependencyUsages"] = std::move(dependency_usages);
-  packet["syntaxFacts"] = llvm::json::Array();
+  llvm::json::Array syntax_facts;
+  for (const Fact *fact : selected)
+    syntax_facts.push_back(syntax_fact_for(*fact));
+  packet["syntaxFacts"] = std::move(syntax_facts);
 
   for (const auto &error : result.errors)
     llvm::errs() << "ccls-asp: " << error << "\n";
