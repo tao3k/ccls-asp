@@ -17,10 +17,12 @@ struct SourceRange {
 struct Fact {
   std::string name;
   std::string qualified_name;
+  std::string symbol_id;
   std::string kind;
   std::string role;
   std::string type;
   std::string target;
+  std::string target_symbol_id;
   SourceRange location;
 };
 

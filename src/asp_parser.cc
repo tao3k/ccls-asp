@@ -9,6 +9,7 @@
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendAction.h>
+#include <clang/Index/USRGeneration.h>
 #include <clang/Lex/PPCallbacks.h>
 #include <clang/Lex/Preprocessor.h>
 #include <clang/Tooling/CompilationDatabase.h>
@@ -69,6 +70,15 @@ std::uint32_t line_for(const clang::SourceManager &sm, clang::SourceLocation loc
   return presumed.isValid() ? presumed.getLine() : 1;
 }
 
+std::string symbol_id_for(const clang::Decl *decl) {
+  if (!decl)
+    return {};
+  llvm::SmallString<128> usr;
+  if (clang::index::generateUSRForDecl(decl, usr))
+    return {};
+  return usr.str().str();
+}
+
 class FactVisitor : public clang::RecursiveASTVisitor<FactVisitor> {
 public:
   FactVisitor(clang::ASTContext &context, CollectorState &state)
@@ -104,7 +114,8 @@ public:
       return true;
     for (const auto &base : decl->bases()) {
       const auto base_name = base.getType().getAsString();
-      add_named(decl, "inheritance", "relation", {}, base_name);
+      const auto *base_decl = base.getType()->getAsCXXRecordDecl();
+      add_named(decl, "inheritance", "relation", {}, base_name, symbol_id_for(base_decl));
     }
     return true;
   }
@@ -145,12 +156,18 @@ public:
   bool VisitCallExpr(clang::CallExpr *expr) {
     if (const auto *callee = expr->getDirectCallee())
       add_at(callee->getNameAsString(), callee->getQualifiedNameAsString(), "call", "reference", expr->getSourceRange(),
-             {}, callee->getQualifiedNameAsString());
+             {}, callee->getQualifiedNameAsString(), {}, symbol_id_for(callee));
     return true;
   }
 
   bool VisitObjCInterfaceDecl(clang::ObjCInterfaceDecl *decl) {
     add_named(decl, "objc-interface", decl->isThisDeclarationADefinition() ? "definition" : "declaration");
+    if (const auto *superclass = decl->getSuperClass())
+      add_named(decl, "objc-inheritance", "relation", {}, superclass->getQualifiedNameAsString(),
+                symbol_id_for(superclass));
+    for (const auto *protocol : decl->protocols())
+      add_named(decl, "objc-protocol-conformance", "relation", {}, protocol->getQualifiedNameAsString(),
+                symbol_id_for(protocol));
     return true;
   }
 
@@ -161,6 +178,9 @@ public:
 
   bool VisitObjCCategoryDecl(clang::ObjCCategoryDecl *decl) {
     add_named(decl, "objc-category", "definition");
+    if (const auto *interface = decl->getClassInterface())
+      add_named(decl, "objc-category-extension", "relation", {}, interface->getQualifiedNameAsString(),
+                symbol_id_for(interface));
     return true;
   }
 
@@ -176,37 +196,42 @@ public:
   }
 
   bool VisitObjCMessageExpr(clang::ObjCMessageExpr *expr) {
+    const auto *method = expr->getMethodDecl();
     add_at(expr->getSelector().getAsString(), expr->getSelector().getAsString(), "objc-message", "reference",
-           expr->getSourceRange(), {}, expr->getSelector().getAsString());
+           expr->getSourceRange(), {}, expr->getSelector().getAsString(), {}, symbol_id_for(method));
     return true;
   }
 
 private:
   void add_named(const clang::NamedDecl *decl, std::string kind, std::string role, std::string type = {},
-                 std::string target = {}) {
+                 std::string target = {}, std::string target_symbol_id = {}) {
     if (!decl || decl->getNameAsString().empty())
       return;
     add_at(decl->getNameAsString(), decl->getQualifiedNameAsString(), std::move(kind), std::move(role),
-           decl->getSourceRange(), std::move(type), std::move(target));
+           decl->getSourceRange(), std::move(type), std::move(target), symbol_id_for(decl),
+           std::move(target_symbol_id));
   }
 
   void add_at(std::string name, std::string qualified_name, std::string kind, std::string role,
-              clang::SourceRange range, std::string type, std::string target) {
+              clang::SourceRange range, std::string type, std::string target, std::string symbol_id = {},
+              std::string target_symbol_id = {}) {
     auto path = project_path(source_manager_, range.getBegin(), state_.workspace);
     if (!path || !supports_source_path(*path, state_.language))
       return;
     const auto start = line_for(source_manager_, range.getBegin());
     const auto end = std::max(start, line_for(source_manager_, range.getEnd()));
     const std::string key = *path + ":" + std::to_string(start) + ":" + std::to_string(end) + ":" + kind + ":" +
-                            qualified_name + ":" + target;
+                            qualified_name + ":" + symbol_id + ":" + target + ":" + target_symbol_id;
     if (!state_.fact_keys.insert(key).second)
       return;
     state_.facts.push_back({std::move(name),
                             std::move(qualified_name),
+                            std::move(symbol_id),
                             std::move(kind),
                             std::move(role),
                             std::move(type),
                             std::move(target),
+                            std::move(target_symbol_id),
                             {*path, start, end}});
   }
 

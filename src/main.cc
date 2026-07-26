@@ -96,10 +96,14 @@ llvm::json::Object fields_for(const Fact &fact, const std::string &language) {
   fields["role"] = fact.role;
   fields["qualifiedName"] = fact.qualified_name;
   fields["sourceAuthority"] = "clang-ast";
+  if (!fact.symbol_id.empty())
+    fields["symbolId"] = fact.symbol_id;
   if (!fact.type.empty())
     fields["type"] = fact.type;
   if (!fact.target.empty())
     fields["target"] = fact.target;
+  if (!fact.target_symbol_id.empty())
+    fields["targetSymbolId"] = fact.target_symbol_id;
   return fields;
 }
 
@@ -152,8 +156,12 @@ std::string sha256_file(const fs::path &path) {
 
 llvm::json::Array query_keys_for(const Fact &fact) {
   std::set<std::string> keys{fact.name, fact.qualified_name, fact.kind};
+  if (!fact.symbol_id.empty())
+    keys.insert(fact.symbol_id);
   if (!fact.target.empty())
     keys.insert(fact.target);
+  if (!fact.target_symbol_id.empty())
+    keys.insert(fact.target_symbol_id);
   llvm::json::Array result;
   for (const auto &key : keys) {
     if (!key.empty())
@@ -222,6 +230,12 @@ void emit_ingest_packet(const ParseResult &result, const Options &options) {
     symbol["name"] = fact->name;
     symbol["qualifiedName"] = fact->qualified_name;
     symbol["kind"] = fact->kind;
+    if (!fact->symbol_id.empty())
+      symbol["symbolId"] = fact->symbol_id;
+    if (!fact->target.empty())
+      symbol["target"] = fact->target;
+    if (!fact->target_symbol_id.empty())
+      symbol["targetSymbolId"] = fact->target_symbol_id;
     symbol["queryKeys"] = query_keys_for(*fact);
     symbol["sourceLocator"] = fact->location.path + ":" + std::to_string(fact->location.start_line) + ":" +
                               std::to_string(fact->location.end_line);

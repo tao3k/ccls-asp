@@ -47,6 +47,7 @@ else()
     clangAST
     clangBasic
     clangFrontend
+    clangIndex
     clangSerialization
     clangTooling
     LLVMOption
@@ -84,6 +85,12 @@ add_test(
   COMMAND
     ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_json_only.cmake
+)
+add_test(
+  NAME ccls-asp-semantic-relations
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_semantic_relations.cmake
 )
 add_test(
   NAME ccls-asp-self-ingest

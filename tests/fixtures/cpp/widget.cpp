@@ -1,4 +1,9 @@
-class Widget {
+class Entity {
+public:
+  virtual ~Entity() = default;
+};
+
+class Widget : public Entity {
 public:
   int value() const { return value_; }
 
