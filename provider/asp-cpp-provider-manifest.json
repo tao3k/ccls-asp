@@ -9,7 +9,6 @@
   "providerId": "ccls-asp",
   "namespace": "agent.semantic-protocols.languages.cpp.ccls-asp",
   "binary": "ccls-asp",
-  "commandPrefixArgs": ["--language", "cpp"],
   "execution": "external-process",
   "source": {
     "defaultExtensions": [".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"],
@@ -20,9 +19,11 @@
     "defaultDependencyMarkers": ["compile_commands.json", "CMakeLists.txt", "meson.build"]
   },
   "searchCapabilities": {
+    "ownerItems": false,
     "semanticFacts": true,
     "dependencyTopology": false,
-    "dependencyTopologyMetadata": false
+    "dependencyTopologyMetadata": false,
+    "workspaceScope": false
   },
   "policy": {
     "directSourceRead": "block",
@@ -30,9 +31,34 @@
     "rawSourceSearch": "block",
     "agentSearchJson": "block"
   },
-  "routes": {
-    "query": {"argv": ["ccls-asp", "--language", "cpp", "query", "--selector", "{selector}", "--workspace", "{projectRoot}", "--code"]},
-    "ingest": {"argv": ["ccls-asp", "--language", "cpp", "search", "ingest", "--workspace", "{projectRoot}"], "stdinMode": "pipe-candidates"},
-    "guide": {"argv": ["ccls-asp", "--language", "cpp", "guide", "--workspace", "{projectRoot}"]}
+  "queryPackDescriptor": {
+    "descriptorId": "cpp.query-pack",
+    "descriptorVersion": "1",
+    "languageId": "cpp",
+    "termRoleOverrides": [],
+    "recipes": [
+      {
+        "recipeId": "cpp-symbol-owner",
+        "trigger": {
+          "terms": ["symbol", "owner", "definition", "reference"],
+          "match": "any"
+        },
+        "clauses": [
+          {
+            "terms": ["symbol", "owner", "definition", "reference"],
+            "roles": ["concept", "symbol"],
+            "intentAxes": ["data-shape"]
+          }
+        ]
+      }
+    ]
+  },
+  "routeBindings": {
+    "prime": "search/prime",
+    "owner": "search/owner",
+    "lexical": "search/lexical",
+    "query": "query/exact-selector",
+    "ingest": "search/ingest",
+    "guide": "guide"
   }
 }
