@@ -6,7 +6,9 @@
 
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/DeclObjC.h>
+#include <clang/AST/ExprObjC.h>
 #include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/AST/TypeLoc.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendAction.h>
 #include <clang/Index/USRGeneration.h>
@@ -99,6 +101,14 @@ public:
     return true;
   }
 
+  bool VisitCXXMethodDecl(clang::CXXMethodDecl *decl) {
+    if (decl->isImplicit())
+      return true;
+    for (const auto *overridden : decl->overridden_methods())
+      add_named(decl, "override", "relation", {}, overridden->getQualifiedNameAsString(), symbol_id_for(overridden));
+    return true;
+  }
+
   bool VisitRecordDecl(clang::RecordDecl *decl) {
     if (decl->isImplicit())
       return true;
@@ -143,6 +153,12 @@ public:
     return true;
   }
 
+  bool VisitParmVarDecl(clang::ParmVarDecl *decl) {
+    if (!decl->isImplicit())
+      add_named(decl, "parameter", "definition", decl->getType().getAsString());
+    return true;
+  }
+
   bool VisitTypedefNameDecl(clang::TypedefNameDecl *decl) {
     add_named(decl, "type-alias", "definition", decl->getUnderlyingType().getAsString());
     return true;
@@ -157,6 +173,26 @@ public:
     if (const auto *callee = expr->getDirectCallee())
       add_at(callee->getNameAsString(), callee->getQualifiedNameAsString(), "call", "reference", expr->getSourceRange(),
              {}, callee->getQualifiedNameAsString(), {}, symbol_id_for(callee));
+    return true;
+  }
+
+  bool VisitDeclRefExpr(clang::DeclRefExpr *expr) {
+    add_reference(expr->getDecl(), "declaration-reference", expr->getSourceRange());
+    return true;
+  }
+
+  bool VisitMemberExpr(clang::MemberExpr *expr) {
+    add_reference(expr->getMemberDecl(), "member-reference", expr->getSourceRange());
+    return true;
+  }
+
+  bool VisitTypeLoc(clang::TypeLoc type_loc) {
+    const clang::NamedDecl *decl = nullptr;
+    if (const auto *tag = type_loc.getTypePtr()->getAs<clang::TagType>())
+      decl = tag->getDecl();
+    else if (const auto *alias = type_loc.getTypePtr()->getAs<clang::TypedefType>())
+      decl = alias->getDecl();
+    add_reference(decl, "type-reference", type_loc.getSourceRange());
     return true;
   }
 
@@ -202,7 +238,32 @@ public:
     return true;
   }
 
+  bool VisitObjCIvarRefExpr(clang::ObjCIvarRefExpr *expr) {
+    add_reference(expr->getDecl(), "objc-ivar-reference", expr->getSourceRange());
+    return true;
+  }
+
+  bool VisitObjCPropertyRefExpr(clang::ObjCPropertyRefExpr *expr) {
+    const clang::NamedDecl *decl = nullptr;
+    if (expr->isExplicitProperty())
+      decl = expr->getExplicitProperty();
+    else if (expr->isImplicitProperty())
+      decl = expr->getImplicitPropertyGetter();
+    add_reference(decl, "objc-property-reference", expr->getSourceRange());
+    return true;
+  }
+
 private:
+  void add_reference(const clang::NamedDecl *decl, std::string kind, clang::SourceRange range) {
+    if (!decl || decl->getNameAsString().empty())
+      return;
+    auto target_symbol_id = symbol_id_for(decl);
+    if (target_symbol_id.empty())
+      return;
+    add_at(decl->getNameAsString(), decl->getQualifiedNameAsString(), std::move(kind), "reference", range, {},
+           decl->getQualifiedNameAsString(), {}, std::move(target_symbol_id));
+  }
+
   void add_named(const clang::NamedDecl *decl, std::string kind, std::string role, std::string type = {},
                  std::string target = {}, std::string target_symbol_id = {}) {
     if (!decl || decl->getNameAsString().empty())
