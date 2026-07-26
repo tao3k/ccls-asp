@@ -1,7 +1,5 @@
-typedef struct Widget {
-  int value;
-} Widget;
+#include "widget.h"
 
-static int bump(int value) { return value + 1; }
+static int bump(int value) { return WIDGET_INCREMENT(value); }
 
 int widget_value(Widget *widget) { return bump(widget->value); }

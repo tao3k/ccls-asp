@@ -196,6 +196,8 @@ std::string syntax_kind_for(const Fact &fact) {
     return "call";
   if (fact.kind == "type-alias" || fact.kind == "type-reference")
     return "type";
+  if (fact.kind == "macro-definition" || fact.kind == "macro-expansion")
+    return "macro";
   return "custom";
 }
 
@@ -354,6 +356,9 @@ void emit_ingest_packet(const ParseResult &result, const Options &options) {
     dependency["ownerPath"] = usage.owner_path;
     dependency["packageName"] = usage.package_name;
     dependency["importPath"] = usage.import_path;
+    if (!usage.resolved_path.empty())
+      dependency["resolvedPath"] = usage.resolved_path;
+    dependency["includeKind"] = usage.angled ? "angle" : "quote";
     dependency["source"] = "clang-preprocessor";
     dependency["sourceLocator"] = usage.source_locator;
     dependency["queryKeys"] = query_keys_for(usage);

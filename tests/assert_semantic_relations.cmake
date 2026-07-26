@@ -12,6 +12,10 @@ foreach(expected
         "\"kind\": \"declaration-reference\""
         "\"kind\": \"member-reference\""
         "\"kind\": \"parameter\""
+        "\"kind\": \"macro-definition\""
+        "\"kind\": \"macro-expansion\""
+        "\"resolvedPath\": \"widget.h\""
+        "\"includeKind\": \"quote\""
         "\"source\": \"native-parser\""
         "\"relations\":"
         "\"targetSymbolId\":")

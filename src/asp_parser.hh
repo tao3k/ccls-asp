@@ -30,6 +30,8 @@ struct DependencyUsage {
   std::string owner_path;
   std::string package_name;
   std::string import_path;
+  std::string resolved_path;
+  bool angled = false;
   std::string source_locator;
   std::vector<std::string> query_keys;
 };

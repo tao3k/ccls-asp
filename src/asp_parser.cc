@@ -47,6 +47,17 @@ struct CollectorState {
 
 std::string normalize_path(const fs::path &path) { return path.lexically_normal().generic_string(); }
 
+std::optional<std::string> project_path(const fs::path &path, const fs::path &workspace) {
+  std::error_code ec;
+  fs::path absolute = fs::weakly_canonical(path, ec);
+  if (ec)
+    absolute = fs::absolute(path, ec);
+  const fs::path relative = fs::relative(absolute, workspace, ec);
+  if (ec || relative.empty() || relative.native().starts_with(".."))
+    return std::nullopt;
+  return normalize_path(relative);
+}
+
 std::optional<std::string> project_path(const clang::SourceManager &sm, clang::SourceLocation loc,
                                         const fs::path &workspace) {
   if (loc.isInvalid())
@@ -55,14 +66,7 @@ std::optional<std::string> project_path(const clang::SourceManager &sm, clang::S
   if (!presumed.isValid())
     return std::nullopt;
 
-  std::error_code ec;
-  fs::path absolute = fs::weakly_canonical(fs::path(presumed.getFilename()), ec);
-  if (ec)
-    absolute = fs::absolute(fs::path(presumed.getFilename()), ec);
-  const fs::path relative = fs::relative(absolute, workspace, ec);
-  if (ec || relative.empty() || relative.native().starts_with(".."))
-    return std::nullopt;
-  return normalize_path(relative);
+  return project_path(fs::path(presumed.getFilename()), workspace);
 }
 
 std::uint32_t line_for(const clang::SourceManager &sm, clang::SourceLocation loc) {
@@ -79,6 +83,38 @@ std::string symbol_id_for(const clang::Decl *decl) {
   if (clang::index::generateUSRForDecl(decl, usr))
     return {};
   return usr.str().str();
+}
+
+void add_fact_at(CollectorState &state, clang::SourceManager &source_manager, std::string name,
+                 std::string qualified_name, std::string symbol_id, std::string kind, std::string role,
+                 clang::SourceRange range, std::string type = {}, std::string target = {},
+                 std::string target_symbol_id = {}) {
+  auto path = project_path(source_manager, range.getBegin(), state.workspace);
+  if (!path || !supports_source_path(*path, state.language))
+    return;
+  const auto start = line_for(source_manager, range.getBegin());
+  const auto end = std::max(start, line_for(source_manager, range.getEnd()));
+  const std::string key = *path + ":" + std::to_string(start) + ":" + std::to_string(end) + ":" + kind + ":" +
+                          qualified_name + ":" + symbol_id + ":" + target + ":" + target_symbol_id;
+  if (!state.fact_keys.insert(key).second)
+    return;
+  state.facts.push_back({std::move(name),
+                         std::move(qualified_name),
+                         std::move(symbol_id),
+                         std::move(kind),
+                         std::move(role),
+                         std::move(type),
+                         std::move(target),
+                         std::move(target_symbol_id),
+                         {*path, start, end}});
+}
+
+std::string macro_symbol_id(CollectorState &state, clang::SourceManager &source_manager,
+                            clang::SourceLocation definition_location, llvm::StringRef name) {
+  const auto path = project_path(source_manager, definition_location, state.workspace);
+  if (!path)
+    return {};
+  return "clang-macro:" + *path + "#" + name.str();
 }
 
 class FactVisitor : public clang::RecursiveASTVisitor<FactVisitor> {
@@ -276,24 +312,9 @@ private:
   void add_at(std::string name, std::string qualified_name, std::string kind, std::string role,
               clang::SourceRange range, std::string type, std::string target, std::string symbol_id = {},
               std::string target_symbol_id = {}) {
-    auto path = project_path(source_manager_, range.getBegin(), state_.workspace);
-    if (!path || !supports_source_path(*path, state_.language))
-      return;
-    const auto start = line_for(source_manager_, range.getBegin());
-    const auto end = std::max(start, line_for(source_manager_, range.getEnd()));
-    const std::string key = *path + ":" + std::to_string(start) + ":" + std::to_string(end) + ":" + kind + ":" +
-                            qualified_name + ":" + symbol_id + ":" + target + ":" + target_symbol_id;
-    if (!state_.fact_keys.insert(key).second)
-      return;
-    state_.facts.push_back({std::move(name),
-                            std::move(qualified_name),
-                            std::move(symbol_id),
-                            std::move(kind),
-                            std::move(role),
-                            std::move(type),
-                            std::move(target),
-                            std::move(target_symbol_id),
-                            {*path, start, end}});
+    add_fact_at(state_, source_manager_, std::move(name), std::move(qualified_name), std::move(symbol_id),
+                std::move(kind), std::move(role), range, std::move(type), std::move(target),
+                std::move(target_symbol_id));
   }
 
   clang::SourceManager &source_manager_;
@@ -317,9 +338,9 @@ public:
   DependencyCallbacks(clang::SourceManager &source_manager, CollectorState &state)
       : source_manager_(source_manager), state_(state) {}
 
-  void InclusionDirective(clang::SourceLocation hash_location, const clang::Token &, llvm::StringRef file_name, bool,
-                          clang::CharSourceRange, clang::OptionalFileEntryRef, llvm::StringRef, llvm::StringRef,
-                          const clang::Module *, bool, clang::SrcMgr::CharacteristicKind) override {
+  void InclusionDirective(clang::SourceLocation hash_location, const clang::Token &, llvm::StringRef file_name,
+                          bool angled, clang::CharSourceRange, clang::OptionalFileEntryRef file, llvm::StringRef,
+                          llvm::StringRef, const clang::Module *, bool, clang::SrcMgr::CharacteristicKind) override {
     const auto owner_path = project_path(source_manager_, hash_location, state_.workspace);
     if (!owner_path || !supports_source_path(*owner_path, state_.language))
       return;
@@ -336,13 +357,49 @@ public:
     const fs::path include_path(import_path);
     keys.insert(include_path.filename().string());
     keys.insert(include_path.stem().string());
+    std::string resolved_path;
+    if (file) {
+      if (const auto resolved = project_path(fs::path(file->getName().str()), state_.workspace))
+        resolved_path = *resolved;
+    }
+    if (!resolved_path.empty())
+      keys.insert(resolved_path);
     state_.dependency_usages.push_back({
         *owner_path,
         package_name,
         import_path,
+        resolved_path,
+        angled,
         *owner_path + ":" + std::to_string(line) + ":" + std::to_string(line),
         {keys.begin(), keys.end()},
     });
+  }
+
+  void MacroDefined(const clang::Token &macro_name_token, const clang::MacroDirective *) override {
+    const auto *identifier = macro_name_token.getIdentifierInfo();
+    if (!identifier)
+      return;
+    const auto name = identifier->getName();
+    const auto location = macro_name_token.getLocation();
+    const auto symbol_id = macro_symbol_id(state_, source_manager_, location, name);
+    if (symbol_id.empty())
+      return;
+    add_fact_at(state_, source_manager_, name.str(), name.str(), symbol_id, "macro-definition", "definition",
+                clang::SourceRange(location, location));
+  }
+
+  void MacroExpands(const clang::Token &macro_name_token, const clang::MacroDefinition &definition,
+                    clang::SourceRange range, const clang::MacroArgs *) override {
+    const auto *identifier = macro_name_token.getIdentifierInfo();
+    const auto *macro = definition.getMacroInfo();
+    if (!identifier || !macro)
+      return;
+    const auto name = identifier->getName();
+    const auto target_symbol_id = macro_symbol_id(state_, source_manager_, macro->getDefinitionLoc(), name);
+    if (target_symbol_id.empty())
+      return;
+    add_fact_at(state_, source_manager_, name.str(), name.str(), {}, "macro-expansion", "reference", range, {},
+                name.str(), target_symbol_id);
   }
 
 private:
@@ -374,6 +431,17 @@ private:
   CollectorState &state_;
 };
 
+bool supports_translation_unit_path(const std::string &path, const std::string &language) {
+  std::string extension = fs::path(path).extension().string();
+  std::transform(extension.begin(), extension.end(), extension.begin(),
+                 [](unsigned char character) { return std::tolower(character); });
+  if (language == "c")
+    return extension == ".c";
+  if (language == "objective-c")
+    return extension == ".m" || extension == ".mm";
+  return extension == ".cc" || extension == ".cpp" || extension == ".cxx" || extension == ".c++";
+}
+
 std::vector<std::string> source_files(const fs::path &workspace, const std::string &language) {
   std::vector<std::string> files;
   std::error_code ec;
@@ -389,7 +457,7 @@ std::vector<std::string> source_files(const fs::path &workspace, const std::stri
         it.disable_recursion_pending();
       continue;
     }
-    if (it->is_regular_file() && supports_source_path(it->path().string(), language))
+    if (it->is_regular_file() && supports_translation_unit_path(it->path().string(), language))
       files.push_back(it->path().string());
   }
   std::sort(files.begin(), files.end());
@@ -501,9 +569,10 @@ ParseResult parse_translation_units(const std::string &workspace, const std::vec
     }
   } else if (database) {
     files = database->getAllFiles();
-    files.erase(std::remove_if(files.begin(), files.end(),
-                               [&](const std::string &path) { return !supports_source_path(path, language); }),
-                files.end());
+    files.erase(
+        std::remove_if(files.begin(), files.end(),
+                       [&](const std::string &path) { return !supports_translation_unit_path(path, language); }),
+        files.end());
   } else {
     files = source_files(root, language);
   }
