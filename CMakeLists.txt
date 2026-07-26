@@ -93,6 +93,18 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_semantic_relations.cmake
 )
 add_test(
+  NAME ccls-asp-canonical-selector
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_canonical_selector.cmake
+)
+add_test(
+  NAME ccls-asp-parser-identity
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_parser_identity.cmake
+)
+add_test(
   NAME ccls-asp-cli-contract
   COMMAND
     ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P

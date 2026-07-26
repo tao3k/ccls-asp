@@ -6,19 +6,24 @@
 
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/DeclObjC.h>
+#include <clang/AST/DeclTemplate.h>
+#include <clang/AST/ExprCXX.h>
 #include <clang/AST/ExprObjC.h>
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/AST/TypeLoc.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendAction.h>
 #include <clang/Index/USRGeneration.h>
+#include <clang/Lex/Lexer.h>
 #include <clang/Lex/PPCallbacks.h>
 #include <clang/Lex/Preprocessor.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
 #include <cstdlib>
 #include <iomanip>
+#include <llvm/ADT/StringExtras.h>
 #include <llvm/Support/Path.h>
+#include <llvm/Support/SHA256.h>
 
 #include <algorithm>
 #include <cctype>
@@ -76,6 +81,22 @@ std::uint32_t line_for(const clang::SourceManager &sm, clang::SourceLocation loc
   return presumed.isValid() ? presumed.getLine() : 1;
 }
 
+std::uint32_t column_for(const clang::SourceManager &sm, clang::SourceLocation loc) {
+  if (loc.isInvalid())
+    return 1;
+  const auto presumed = sm.getPresumedLoc(sm.getExpansionLoc(loc));
+  return presumed.isValid() ? presumed.getColumn() : 1;
+}
+
+std::uint64_t offset_for(const clang::SourceManager &sm, clang::SourceLocation loc) {
+  if (loc.isInvalid())
+    return 0;
+  const auto expansion = sm.getExpansionLoc(loc);
+  if (expansion.isInvalid() || !expansion.isFileID())
+    return 0;
+  return sm.getFileOffset(expansion);
+}
+
 std::string symbol_id_for(const clang::Decl *decl) {
   if (!decl)
     return {};
@@ -85,15 +106,83 @@ std::string symbol_id_for(const clang::Decl *decl) {
   return usr.str().str();
 }
 
-void add_fact_at(CollectorState &state, clang::SourceManager &source_manager, std::string name,
-                 std::string qualified_name, std::string symbol_id, std::string kind, std::string role,
-                 clang::SourceRange range, std::string type = {}, std::string target = {},
-                 std::string target_symbol_id = {}) {
+std::string container_symbol_id_for(const clang::NamedDecl *decl) {
+  if (!decl)
+    return {};
+  const clang::DeclContext *context = decl->getDeclContext();
+  while (context && !context->isTranslationUnit()) {
+    const auto *context_decl = clang::Decl::castFromDeclContext(context);
+    if (const auto *named = llvm::dyn_cast<clang::NamedDecl>(context_decl)) {
+      const auto symbol_id = symbol_id_for(named);
+      if (!symbol_id.empty())
+        return symbol_id;
+    }
+    context = context->getParent();
+  }
+  return {};
+}
+
+std::string visibility_for(const clang::NamedDecl *decl) {
+  if (!decl)
+    return "unknown";
+  switch (decl->getAccess()) {
+  case clang::AS_public:
+    return "public";
+  case clang::AS_private:
+    return "private";
+  case clang::AS_protected:
+    return "protected";
+  case clang::AS_none:
+    break;
+  }
+  if (decl->getFormalLinkage() == clang::Linkage::External)
+    return "public";
+  if (decl->getDeclContext()->isFileContext())
+    return "internal";
+  return "unknown";
+}
+
+std::string selector_escape(std::string_view value) {
+  std::ostringstream escaped;
+  escaped << std::uppercase << std::hex;
+  for (const unsigned char character : value) {
+    if (std::isalnum(character) || character == '-' || character == '_' || character == '.' || character == '~' ||
+        character == ':' || character == '@' || character == '/')
+      escaped << character;
+    else
+      escaped << '%' << std::setw(2) << std::setfill('0') << static_cast<unsigned int>(character);
+  }
+  return escaped.str();
+}
+
+std::string structural_selector_for(const CollectorState &state, std::string_view path, std::string_view symbol_id,
+                                    std::string_view kind, std::string_view role) {
+  if (symbol_id.empty() || (role != "definition" && role != "declaration"))
+    return {};
+  return state.language + "://" + std::string(path) + "#clang-usr:" + selector_escape(symbol_id) + ":" +
+         selector_escape(kind);
+}
+
+void add_fact_at(CollectorState &state, clang::SourceManager &source_manager, const clang::LangOptions &lang_options,
+                 std::string name, std::string qualified_name, std::string symbol_id, std::string kind,
+                 std::string role, clang::SourceRange range, std::string type = {}, std::string target = {},
+                 std::string target_symbol_id = {}, std::string container_symbol_id = {},
+                 std::string visibility = "unknown") {
   auto path = project_path(source_manager, range.getBegin(), state.workspace);
   if (!path || !supports_source_path(*path, state.language))
     return;
-  const auto start = line_for(source_manager, range.getBegin());
-  const auto end = std::max(start, line_for(source_manager, range.getEnd()));
+  const auto start_location = source_manager.getExpansionLoc(range.getBegin());
+  auto end_location = clang::Lexer::getLocForEndOfToken(source_manager.getExpansionLoc(range.getEnd()), 0,
+                                                        source_manager, lang_options);
+  if (end_location.isInvalid())
+    end_location = source_manager.getExpansionLoc(range.getEnd());
+  const auto start = line_for(source_manager, start_location);
+  const auto end = std::max(start, line_for(source_manager, end_location));
+  const auto start_column = column_for(source_manager, start_location);
+  const auto end_column = column_for(source_manager, end_location);
+  const auto start_offset = offset_for(source_manager, start_location);
+  const auto end_offset = std::max(start_offset, offset_for(source_manager, end_location));
+  const auto structural_selector = structural_selector_for(state, *path, symbol_id, kind, role);
   const std::string key = *path + ":" + std::to_string(start) + ":" + std::to_string(end) + ":" + kind + ":" +
                           qualified_name + ":" + symbol_id + ":" + target + ":" + target_symbol_id;
   if (!state.fact_keys.insert(key).second)
@@ -103,10 +192,12 @@ void add_fact_at(CollectorState &state, clang::SourceManager &source_manager, st
                          std::move(symbol_id),
                          std::move(kind),
                          std::move(role),
+                         std::move(visibility),
                          std::move(type),
                          std::move(target),
                          std::move(target_symbol_id),
-                         {*path, start, end}});
+                         std::move(container_symbol_id),
+                         {*path, start, end, start_column, end_column, start_offset, end_offset, structural_selector}});
 }
 
 std::string macro_symbol_id(CollectorState &state, clang::SourceManager &source_manager,
@@ -120,13 +211,15 @@ std::string macro_symbol_id(CollectorState &state, clang::SourceManager &source_
 class FactVisitor : public clang::RecursiveASTVisitor<FactVisitor> {
 public:
   FactVisitor(clang::ASTContext &context, CollectorState &state)
-      : source_manager_(context.getSourceManager()), state_(state) {}
+      : source_manager_(context.getSourceManager()), lang_options_(context.getLangOpts()), state_(state) {}
 
   bool VisitFunctionDecl(clang::FunctionDecl *decl) {
     if (decl->isImplicit())
       return true;
     std::string kind = "function";
-    if (llvm::isa<clang::CXXConstructorDecl>(decl))
+    if (decl->getDescribedFunctionTemplate())
+      kind = "function-template";
+    else if (llvm::isa<clang::CXXConstructorDecl>(decl))
       kind = "constructor";
     else if (llvm::isa<clang::CXXDestructorDecl>(decl))
       kind = "destructor";
@@ -149,8 +242,12 @@ public:
     if (decl->isImplicit())
       return true;
     std::string kind = decl->isUnion() ? "union" : "struct";
-    if (const auto *cxx = llvm::dyn_cast<clang::CXXRecordDecl>(decl); cxx && cxx->isClass())
-      kind = "class";
+    if (const auto *cxx = llvm::dyn_cast<clang::CXXRecordDecl>(decl)) {
+      if (cxx->getDescribedClassTemplate())
+        kind = "class-template";
+      else if (cxx->isClass())
+        kind = "class";
+    }
     add_named(decl, kind, decl->isThisDeclarationADefinition() ? "definition" : "declaration");
     return true;
   }
@@ -205,10 +302,53 @@ public:
     return true;
   }
 
+  bool VisitNamespaceAliasDecl(clang::NamespaceAliasDecl *decl) {
+    const auto *target = decl->getNamespace();
+    add_named(decl, "namespace-alias", "definition", {}, target ? target->getQualifiedNameAsString() : std::string{},
+              symbol_id_for(target));
+    return true;
+  }
+
+  bool VisitUsingDecl(clang::UsingDecl *decl) {
+    add_named(decl, "using", "declaration");
+    for (const auto *shadow : decl->shadows()) {
+      const auto *target = shadow->getTargetDecl();
+      add_named(decl, "using-target", "relation", {}, target ? target->getQualifiedNameAsString() : std::string{},
+                symbol_id_for(target));
+    }
+    return true;
+  }
+
+  bool VisitLambdaExpr(clang::LambdaExpr *expr) {
+    const auto *call_operator = expr->getCallOperator();
+    if (!call_operator)
+      return true;
+    add_at("lambda", call_operator->getQualifiedNameAsString(), "lambda", "definition", expr->getSourceRange(),
+           call_operator->getType().getAsString(), {}, symbol_id_for(call_operator), {},
+           container_symbol_id_for(call_operator));
+    return true;
+  }
+
   bool VisitCallExpr(clang::CallExpr *expr) {
-    if (const auto *callee = expr->getDirectCallee())
+    if (const auto *callee = expr->getDirectCallee()) {
       add_at(callee->getNameAsString(), callee->getQualifiedNameAsString(), "call", "reference", expr->getSourceRange(),
              {}, callee->getQualifiedNameAsString(), {}, symbol_id_for(callee));
+    } else if (const auto *decl_ref = llvm::dyn_cast<clang::DeclRefExpr>(expr->getCallee()->IgnoreParenImpCasts())) {
+      const auto *callee = decl_ref->getDecl();
+      add_at(callee->getNameAsString(), callee->getQualifiedNameAsString(), "indirect-call", "reference",
+             expr->getSourceRange(), callee->getType().getAsString(), callee->getQualifiedNameAsString(), {},
+             symbol_id_for(callee));
+    }
+    return true;
+  }
+
+  bool VisitCXXConstructExpr(clang::CXXConstructExpr *expr) {
+    const auto *constructor = expr->getConstructor();
+    if (!constructor)
+      return true;
+    add_at(constructor->getNameAsString(), constructor->getQualifiedNameAsString(), "constructor-call", "reference",
+           expr->getSourceRange(), constructor->getType().getAsString(), constructor->getQualifiedNameAsString(), {},
+           symbol_id_for(constructor));
     return true;
   }
 
@@ -245,6 +385,9 @@ public:
 
   bool VisitObjCProtocolDecl(clang::ObjCProtocolDecl *decl) {
     add_named(decl, "objc-protocol", decl->isThisDeclarationADefinition() ? "definition" : "declaration");
+    for (const auto *protocol : decl->protocols())
+      add_named(decl, "objc-protocol-inheritance", "relation", {}, protocol->getQualifiedNameAsString(),
+                symbol_id_for(protocol));
     return true;
   }
 
@@ -304,20 +447,24 @@ private:
                  std::string target = {}, std::string target_symbol_id = {}) {
     if (!decl || decl->getNameAsString().empty())
       return;
+    if (role == "relation" && target_symbol_id.empty())
+      return;
     add_at(decl->getNameAsString(), decl->getQualifiedNameAsString(), std::move(kind), std::move(role),
-           decl->getSourceRange(), std::move(type), std::move(target), symbol_id_for(decl),
-           std::move(target_symbol_id));
+           decl->getSourceRange(), std::move(type), std::move(target), symbol_id_for(decl), std::move(target_symbol_id),
+           container_symbol_id_for(decl), visibility_for(decl));
   }
 
   void add_at(std::string name, std::string qualified_name, std::string kind, std::string role,
               clang::SourceRange range, std::string type, std::string target, std::string symbol_id = {},
-              std::string target_symbol_id = {}) {
-    add_fact_at(state_, source_manager_, std::move(name), std::move(qualified_name), std::move(symbol_id),
-                std::move(kind), std::move(role), range, std::move(type), std::move(target),
-                std::move(target_symbol_id));
+              std::string target_symbol_id = {}, std::string container_symbol_id = {},
+              std::string visibility = "unknown") {
+    add_fact_at(state_, source_manager_, lang_options_, std::move(name), std::move(qualified_name),
+                std::move(symbol_id), std::move(kind), std::move(role), range, std::move(type), std::move(target),
+                std::move(target_symbol_id), std::move(container_symbol_id), std::move(visibility));
   }
 
   clang::SourceManager &source_manager_;
+  const clang::LangOptions &lang_options_;
   CollectorState &state_;
 };
 
@@ -335,8 +482,9 @@ private:
 
 class DependencyCallbacks : public clang::PPCallbacks {
 public:
-  DependencyCallbacks(clang::SourceManager &source_manager, CollectorState &state)
-      : source_manager_(source_manager), state_(state) {}
+  DependencyCallbacks(clang::SourceManager &source_manager, const clang::LangOptions &lang_options,
+                      CollectorState &state)
+      : source_manager_(source_manager), lang_options_(lang_options), state_(state) {}
 
   void InclusionDirective(clang::SourceLocation hash_location, const clang::Token &, llvm::StringRef file_name,
                           bool angled, clang::CharSourceRange, clang::OptionalFileEntryRef file, llvm::StringRef,
@@ -384,8 +532,8 @@ public:
     const auto symbol_id = macro_symbol_id(state_, source_manager_, location, name);
     if (symbol_id.empty())
       return;
-    add_fact_at(state_, source_manager_, name.str(), name.str(), symbol_id, "macro-definition", "definition",
-                clang::SourceRange(location, location));
+    add_fact_at(state_, source_manager_, lang_options_, name.str(), name.str(), symbol_id, "macro-definition",
+                "definition", clang::SourceRange(location, location));
   }
 
   void MacroExpands(const clang::Token &macro_name_token, const clang::MacroDefinition &definition,
@@ -398,12 +546,13 @@ public:
     const auto target_symbol_id = macro_symbol_id(state_, source_manager_, macro->getDefinitionLoc(), name);
     if (target_symbol_id.empty())
       return;
-    add_fact_at(state_, source_manager_, name.str(), name.str(), {}, "macro-expansion", "reference", range, {},
-                name.str(), target_symbol_id);
+    add_fact_at(state_, source_manager_, lang_options_, name.str(), name.str(), {}, "macro-expansion", "reference",
+                range, {}, name.str(), target_symbol_id);
   }
 
 private:
   clang::SourceManager &source_manager_;
+  const clang::LangOptions &lang_options_;
   CollectorState &state_;
 };
 
@@ -413,7 +562,7 @@ public:
 
   std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance &compiler, llvm::StringRef) override {
     compiler.getPreprocessor().addPPCallbacks(
-        std::make_unique<DependencyCallbacks>(compiler.getSourceManager(), state_));
+        std::make_unique<DependencyCallbacks>(compiler.getSourceManager(), compiler.getLangOpts(), state_));
     return std::make_unique<FactConsumer>(compiler.getASTContext(), state_);
   }
 
@@ -470,6 +619,55 @@ std::vector<std::string> fallback_args(const std::string &language) {
   if (language == "objective-c")
     return {"-x", "objective-c", "-fsyntax-only"};
   return {"-x", "c++", "-std=c++17", "-fsyntax-only"};
+}
+
+std::string normalize_context_value(std::string value, const fs::path &workspace) {
+  const auto workspace_text = normalize_path(workspace);
+  std::size_t offset = 0;
+  while (!workspace_text.empty() && (offset = value.find(workspace_text, offset)) != std::string::npos) {
+    value.replace(offset, workspace_text.size(), "{workspace}");
+    offset += std::string_view("{workspace}").size();
+  }
+  return value;
+}
+
+void digest_field(llvm::SHA256 &hash, std::string_view field) {
+  hash.update(std::to_string(field.size()));
+  hash.update(":");
+  hash.update(field);
+  hash.update(";");
+}
+
+CompileContext compile_context_for(const fs::path &workspace, const std::string &file, const std::string &language,
+                                   const clang::tooling::CompilationDatabase *database,
+                                   const std::vector<std::string> &provider_args) {
+  llvm::SHA256 hash;
+  const auto relative = project_path(fs::path(file), workspace).value_or(normalize_path(fs::path(file)));
+  digest_field(hash, language);
+  digest_field(hash, relative);
+  digest_field(hash, CCLS_ASP_CLANG_RESOURCE_DIR);
+
+  bool used_database_command = false;
+  if (database) {
+    const auto commands = database->getCompileCommands(file);
+    if (!commands.empty()) {
+      const auto &command = commands.front();
+      digest_field(hash, normalize_context_value(command.Directory, workspace));
+      for (const auto &argument : command.CommandLine)
+        digest_field(hash, normalize_context_value(argument, workspace));
+      used_database_command = true;
+    }
+  }
+  if (!used_database_command) {
+    digest_field(hash, "{workspace}");
+    digest_field(hash, "ccls-asp-fallback");
+    for (const auto &argument : fallback_args(language))
+      digest_field(hash, argument);
+  }
+  for (const auto &argument : provider_args)
+    digest_field(hash, normalize_context_value(argument, workspace));
+
+  return {relative, llvm::toHex(hash.final(), true)};
 }
 
 } // namespace
@@ -579,16 +777,18 @@ ParseResult parse_translation_units(const std::string &workspace, const std::vec
 
   std::sort(files.begin(), files.end());
   files.erase(std::unique(files.begin(), files.end()), files.end());
+  const auto compiler_args = environment_compiler_args();
   for (const auto &file : files) {
     const auto relative = fs::relative(fs::path(file), root, ec);
-    if (!ec && !relative.native().starts_with(".."))
+    if (!ec && !relative.native().starts_with("..")) {
       result.translation_units.push_back(normalize_path(relative));
+      result.compile_contexts.push_back(compile_context_for(root, file, language, database.get(), compiler_args));
+    }
   }
 
   FactActionFactory factory(state);
   if (database && !files.empty()) {
     clang::tooling::ClangTool tool(*database, files);
-    const auto compiler_args = environment_compiler_args();
     if (!compiler_args.empty()) {
       tool.appendArgumentsAdjuster(
           clang::tooling::getInsertArgumentAdjuster(compiler_args, clang::tooling::ArgumentInsertPosition::BEGIN));
@@ -597,7 +797,8 @@ ParseResult parse_translation_units(const std::string &workspace, const std::vec
     if (status != 0)
       result.errors.push_back("ClangTool failed with status " + std::to_string(status));
   } else {
-    const auto args = fallback_args(language);
+    auto args = fallback_args(language);
+    args.insert(args.begin(), compiler_args.begin(), compiler_args.end());
     for (const auto &file : files) {
       std::ifstream input(file);
       std::ostringstream buffer;

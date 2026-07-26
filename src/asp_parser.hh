@@ -12,6 +12,11 @@ struct SourceRange {
   std::string path;
   std::uint32_t start_line = 1;
   std::uint32_t end_line = 1;
+  std::uint32_t start_column = 1;
+  std::uint32_t end_column = 1;
+  std::uint64_t start_offset = 0;
+  std::uint64_t end_offset = 0;
+  std::string structural_selector;
 };
 
 struct Fact {
@@ -20,10 +25,17 @@ struct Fact {
   std::string symbol_id;
   std::string kind;
   std::string role;
+  std::string visibility;
   std::string type;
   std::string target;
   std::string target_symbol_id;
+  std::string container_symbol_id;
   SourceRange location;
+};
+
+struct CompileContext {
+  std::string translation_unit;
+  std::string digest;
 };
 
 struct DependencyUsage {
@@ -39,6 +51,7 @@ struct DependencyUsage {
 struct ParseResult {
   std::vector<Fact> facts;
   std::vector<DependencyUsage> dependency_usages;
+  std::vector<CompileContext> compile_contexts;
   std::vector<std::string> translation_units;
   std::vector<std::string> errors;
 };

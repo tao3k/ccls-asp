@@ -18,7 +18,12 @@ foreach(expected
         "\"includeKind\": \"quote\""
         "\"source\": \"native-parser\""
         "\"relations\":"
-        "\"targetSymbolId\":")
+        "\"targetSymbolId\":"
+        "\"structuralSelector\": \"c://"
+        "\"compileContexts\":"
+        "\"compileContextDigest\":"
+        "\"occurrences\":"
+        "\"startColumn\":")
   string(FIND "${c_output}" "${expected}" found)
   if(found EQUAL -1)
     message(FATAL_ERROR "C feed missing ${expected}: ${c_output}")
@@ -40,8 +45,19 @@ foreach(expected
         "\"kind\": \"override\""
         "\"kind\": \"type-reference\""
         "\"kind\": \"member-reference\""
+        "\"kind\": \"class-template\""
+        "\"kind\": \"function-template\""
+        "\"kind\": \"lambda\""
+        "\"kind\": \"indirect-call\""
+        "\"kind\": \"namespace-alias\""
+        "\"kind\": \"using-target\""
         "\"symbolId\":"
-        "\"targetSymbolId\":")
+        "\"targetSymbolId\":"
+        "\"containerSymbolId\":"
+        "\"structuralSelector\": \"cpp://"
+        "\"visibility\": \"public\""
+        "\"visibility\": \"private\""
+        "\"relations\":")
   string(FIND "${cpp_output}" "${expected}" found)
   if(found EQUAL -1)
     message(FATAL_ERROR "C++ feed missing ${expected}: ${cpp_output}")
