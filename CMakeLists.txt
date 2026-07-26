@@ -105,6 +105,12 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_parser_identity.cmake
 )
 add_test(
+  NAME ccls-asp-context-variants
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_context_variants.cmake
+)
+add_test(
   NAME ccls-asp-cli-contract
   COMMAND
     ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P

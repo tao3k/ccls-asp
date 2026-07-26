@@ -23,6 +23,7 @@ struct Fact {
   std::string name;
   std::string qualified_name;
   std::string symbol_id;
+  std::string semantic_variant_id;
   std::string kind;
   std::string role;
   std::string visibility;
@@ -30,6 +31,8 @@ struct Fact {
   std::string target;
   std::string target_symbol_id;
   std::string container_symbol_id;
+  std::string translation_unit;
+  std::string compile_context_digest;
   SourceRange location;
 };
 
@@ -40,6 +43,9 @@ struct CompileContext {
 
 struct DependencyUsage {
   std::string owner_path;
+  std::string translation_unit;
+  std::string compile_context_digest;
+  std::string semantic_variant_id;
   std::string package_name;
   std::string import_path;
   std::string resolved_path;

@@ -23,7 +23,21 @@
     "semanticFacts": true,
     "dependencyTopology": false,
     "dependencyTopologyMetadata": false,
-    "workspaceScope": false
+    "workspaceScope": false,
+    "sourceSnapshot": {
+      "descriptorId": "cpp.source-snapshot",
+      "descriptorVersion": "1",
+      "languageId": "cpp",
+      "authority": "live-parser",
+      "algorithm": "blake3-merkle-v1",
+      "packetSchemaId": "asp.source-snapshot.v1",
+      "overlayMode": "merkle-delta",
+      "exactSelectorResolution": "pinned-live-module-graph",
+      "canonicalItemSelectorSchemaId": "asp.canonical-item-selector.v1",
+      "exactSourcePacketSchemaId": "asp.exact-source-query-result.v1",
+      "sourceSnapshotEnvelopeSchemaId": "asp.exact-source-snapshot-envelope.v1",
+      "derivedArtifactEvidenceSchemaId": "asp.derived-source-artifact-evidence.v1"
+    }
   },
   "policy": {
     "directSourceRead": "block",

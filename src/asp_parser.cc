@@ -29,6 +29,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -44,6 +45,9 @@ namespace {
 struct CollectorState {
   fs::path workspace;
   std::string language;
+  std::map<std::string, std::string> compile_context_by_translation_unit;
+  std::string current_translation_unit;
+  std::string current_compile_context_digest;
   std::vector<Fact> facts;
   std::set<std::string> fact_keys;
   std::vector<DependencyUsage> dependency_usages;
@@ -163,6 +167,26 @@ std::string structural_selector_for(const CollectorState &state, std::string_vie
          selector_escape(kind);
 }
 
+std::string semantic_variant_id_for(const CollectorState &state, std::string_view symbol_id,
+                                    std::string_view qualified_name, std::string_view target_symbol_id,
+                                    std::string_view kind, std::string_view role) {
+  llvm::SHA256 hash;
+  const auto append = [&](std::string_view field) {
+    hash.update(std::to_string(field.size()));
+    hash.update(":");
+    hash.update(field);
+    hash.update(";");
+  };
+  append("ccls-asp.semantic-variant.v1");
+  append(state.language);
+  append(symbol_id.empty() ? (target_symbol_id.empty() ? qualified_name : target_symbol_id) : symbol_id);
+  append(kind);
+  append(role);
+  append(state.current_translation_unit);
+  append(state.current_compile_context_digest);
+  return "sha256:" + llvm::toHex(hash.final(), true);
+}
+
 void add_fact_at(CollectorState &state, clang::SourceManager &source_manager, const clang::LangOptions &lang_options,
                  std::string name, std::string qualified_name, std::string symbol_id, std::string kind,
                  std::string role, clang::SourceRange range, std::string type = {}, std::string target = {},
@@ -183,13 +207,17 @@ void add_fact_at(CollectorState &state, clang::SourceManager &source_manager, co
   const auto start_offset = offset_for(source_manager, start_location);
   const auto end_offset = std::max(start_offset, offset_for(source_manager, end_location));
   const auto structural_selector = structural_selector_for(state, *path, symbol_id, kind, role);
+  const auto semantic_variant_id =
+      semantic_variant_id_for(state, symbol_id, qualified_name, target_symbol_id, kind, role);
   const std::string key = *path + ":" + std::to_string(start) + ":" + std::to_string(end) + ":" + kind + ":" +
-                          qualified_name + ":" + symbol_id + ":" + target + ":" + target_symbol_id;
+                          qualified_name + ":" + symbol_id + ":" + target + ":" + target_symbol_id + ":" +
+                          state.current_translation_unit + ":" + state.current_compile_context_digest;
   if (!state.fact_keys.insert(key).second)
     return;
   state.facts.push_back({std::move(name),
                          std::move(qualified_name),
                          std::move(symbol_id),
+                         semantic_variant_id,
                          std::move(kind),
                          std::move(role),
                          std::move(visibility),
@@ -197,6 +225,8 @@ void add_fact_at(CollectorState &state, clang::SourceManager &source_manager, co
                          std::move(target),
                          std::move(target_symbol_id),
                          std::move(container_symbol_id),
+                         state.current_translation_unit,
+                         state.current_compile_context_digest,
                          {*path, start, end, start_column, end_column, start_offset, end_offset, structural_selector}});
 }
 
@@ -498,7 +528,8 @@ public:
     const auto separator = import_path.find('/');
     const std::string package_name = import_path.substr(0, separator);
     const auto line = line_for(source_manager_, hash_location);
-    const std::string key = *owner_path + ":" + std::to_string(line) + ":" + import_path;
+    const std::string key = *owner_path + ":" + std::to_string(line) + ":" + import_path + ":" +
+                            state_.current_translation_unit + ":" + state_.current_compile_context_digest;
     if (!state_.dependency_keys.insert(key).second)
       return;
     std::set<std::string> keys{package_name, import_path};
@@ -512,8 +543,16 @@ public:
     }
     if (!resolved_path.empty())
       keys.insert(resolved_path);
+    const auto semantic_variant_id =
+        semantic_variant_id_for(state_, {}, import_path, {}, "include", "dependency");
+    keys.insert(state_.current_translation_unit);
+    keys.insert(state_.current_compile_context_digest);
+    keys.insert(semantic_variant_id);
     state_.dependency_usages.push_back({
         *owner_path,
+        state_.current_translation_unit,
+        state_.current_compile_context_digest,
+        semantic_variant_id,
         package_name,
         import_path,
         resolved_path,
@@ -559,6 +598,20 @@ private:
 class FactAction : public clang::ASTFrontendAction {
 public:
   explicit FactAction(CollectorState &state) : state_(state) {}
+
+  bool BeginSourceFileAction(clang::CompilerInstance &) override {
+    const auto current_file = project_path(fs::path(getCurrentFile().str()), state_.workspace);
+    state_.current_translation_unit = current_file.value_or(normalize_path(fs::path(getCurrentFile().str())));
+    const auto context = state_.compile_context_by_translation_unit.find(state_.current_translation_unit);
+    state_.current_compile_context_digest =
+        context == state_.compile_context_by_translation_unit.end() ? std::string{} : context->second;
+    return true;
+  }
+
+  void EndSourceFileAction() override {
+    state_.current_translation_unit.clear();
+    state_.current_compile_context_digest.clear();
+  }
 
   std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance &compiler, llvm::StringRef) override {
     compiler.getPreprocessor().addPPCallbacks(
@@ -744,7 +797,7 @@ ParseResult parse_translation_units(const std::string &workspace, const std::vec
     return result;
   }
 
-  CollectorState state{root, language, {}, {}, {}, {}};
+  CollectorState state{root, language, {}, {}, {}, {}, {}, {}, {}};
   std::string database_error;
   fs::path database_root = root;
   if (compilation_database) {
@@ -782,7 +835,9 @@ ParseResult parse_translation_units(const std::string &workspace, const std::vec
     const auto relative = fs::relative(fs::path(file), root, ec);
     if (!ec && !relative.native().starts_with("..")) {
       result.translation_units.push_back(normalize_path(relative));
-      result.compile_contexts.push_back(compile_context_for(root, file, language, database.get(), compiler_args));
+      auto context = compile_context_for(root, file, language, database.get(), compiler_args);
+      state.compile_context_by_translation_unit[context.translation_unit] = context.digest;
+      result.compile_contexts.push_back(std::move(context));
     }
   }
 
@@ -810,14 +865,18 @@ ParseResult parse_translation_units(const std::string &workspace, const std::vec
   }
 
   std::sort(state.facts.begin(), state.facts.end(), [](const Fact &left, const Fact &right) {
-    return std::tie(left.location.path, left.location.start_line, left.kind, left.qualified_name) <
-           std::tie(right.location.path, right.location.start_line, right.kind, right.qualified_name);
+    return std::tie(left.location.path, left.location.start_line, left.kind, left.qualified_name,
+                    left.translation_unit, left.compile_context_digest) <
+           std::tie(right.location.path, right.location.start_line, right.kind, right.qualified_name,
+                    right.translation_unit, right.compile_context_digest);
   });
   result.facts = std::move(state.facts);
   std::sort(state.dependency_usages.begin(), state.dependency_usages.end(),
             [](const DependencyUsage &left, const DependencyUsage &right) {
-              return std::tie(left.owner_path, left.source_locator, left.import_path) <
-                     std::tie(right.owner_path, right.source_locator, right.import_path);
+              return std::tie(left.owner_path, left.source_locator, left.import_path, left.translation_unit,
+                              left.compile_context_digest) <
+                     std::tie(right.owner_path, right.source_locator, right.import_path, right.translation_unit,
+                              right.compile_context_digest);
             });
   result.dependency_usages = std::move(state.dependency_usages);
   return result;

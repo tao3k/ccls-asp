@@ -33,7 +33,12 @@ struct Options {
   std::vector<std::string> owners;
   std::string selector;
   std::string compilation_database;
+  std::string asp_provider_id;
+  std::string asp_parser_identity_digest;
+  std::string asp_query_pack_digest;
+  std::string source_snapshot_envelope;
   bool code = false;
+  bool json = false;
 };
 
 bool valid_language(const std::string &language) {
@@ -58,12 +63,22 @@ Options parse_options(int argc, char **argv) {
       take(options.selector);
     else if (arg == "--compilation-database")
       take(options.compilation_database);
+    else if (arg == "--asp-provider-id")
+      take(options.asp_provider_id);
+    else if (arg == "--asp-parser-identity-digest")
+      take(options.asp_parser_identity_digest);
+    else if (arg == "--asp-query-pack-digest")
+      take(options.asp_query_pack_digest);
+    else if (arg == "--source-snapshot-envelope")
+      take(options.source_snapshot_envelope);
     else if (arg == "--owner") {
       std::string owner;
       take(owner);
       options.owners.push_back(std::move(owner));
     } else if (arg == "--code")
       options.code = true;
+    else if (arg == "--json")
+      options.json = true;
     else if (!arg.starts_with("--"))
       positional.push_back(std::move(arg));
     else
@@ -100,6 +115,9 @@ llvm::json::Object fields_for(const Fact &fact, const std::string &language) {
   fields["endOffset"] = static_cast<std::int64_t>(fact.location.end_offset);
   if (!fact.symbol_id.empty())
     fields["symbolId"] = fact.symbol_id;
+  fields["semanticVariantId"] = fact.semantic_variant_id;
+  fields["translationUnit"] = fact.translation_unit;
+  fields["compileContextDigest"] = fact.compile_context_digest;
   if (!fact.type.empty())
     fields["type"] = fact.type;
   if (!fact.target.empty())
@@ -174,6 +192,12 @@ llvm::json::Array query_keys_for(const Fact &fact) {
     keys.insert(fact.target_symbol_id);
   if (!fact.container_symbol_id.empty())
     keys.insert(fact.container_symbol_id);
+  if (!fact.semantic_variant_id.empty())
+    keys.insert(fact.semantic_variant_id);
+  if (!fact.translation_unit.empty())
+    keys.insert(fact.translation_unit);
+  if (!fact.compile_context_digest.empty())
+    keys.insert(fact.compile_context_digest);
   if (!fact.location.structural_selector.empty())
     keys.insert(fact.location.structural_selector);
   llvm::json::Array result;
@@ -231,12 +255,7 @@ llvm::json::Object syntax_fact_for(const Fact &fact) {
   llvm::json::Object syntax_fact;
   const std::string location_id = fact.location.path + ":" + std::to_string(fact.location.start_offset) + ":" +
                                   std::to_string(fact.location.end_offset);
-  const std::string identity = !fact.symbol_id.empty()
-                                   ? fact.symbol_id
-                                   : (!fact.target_symbol_id.empty() ? fact.target_symbol_id : fact.qualified_name);
-  syntax_fact["id"] = !fact.location.structural_selector.empty()
-                          ? fact.location.structural_selector
-                          : "clang-occurrence:" + fact.kind + ":" + identity + "@" + location_id;
+  syntax_fact["id"] = "clang-semantic-variant:" + fact.semantic_variant_id + "@" + location_id;
   syntax_fact["kind"] = syntax_kind_for(fact);
   syntax_fact["source"] = "native-parser";
   syntax_fact["languageKind"] = fact.kind;
@@ -250,6 +269,9 @@ llvm::json::Object syntax_fact_for(const Fact &fact) {
 
   llvm::json::Object fields;
   fields["role"] = fact.role;
+  fields["semanticVariantId"] = fact.semantic_variant_id;
+  fields["translationUnit"] = fact.translation_unit;
+  fields["compileContextDigest"] = fact.compile_context_digest;
   if (!fact.type.empty())
     fields["type"] = fact.type;
   if (!fact.symbol_id.empty())
@@ -349,10 +371,10 @@ void emit_ingest_packet(const ParseResult &result, const Options &options) {
   for (const Fact *fact : selected) {
     if (fact->role != "definition" && fact->role != "declaration")
       continue;
-    const std::string key = !fact->location.structural_selector.empty()
-                                ? fact->location.structural_selector
-                                : fact->location.path + ":" + std::to_string(fact->location.start_offset) + ":" +
-                                      fact->kind + ":" + fact->qualified_name;
+    const std::string key = (!fact->location.structural_selector.empty()
+                                 ? fact->location.structural_selector
+                                 : fact->location.path + ":" + fact->kind + ":" + fact->qualified_name) +
+                            "@variant:" + fact->semantic_variant_id;
     const auto [entry, inserted] = canonical_items.emplace(key, fact);
     if (!inserted && entry->second->role == "declaration" && fact->role == "definition")
       entry->second = fact;
@@ -369,6 +391,9 @@ void emit_ingest_packet(const ParseResult &result, const Options &options) {
     symbol["visibility"] = fact->visibility;
     if (!fact->symbol_id.empty())
       symbol["symbolId"] = fact->symbol_id;
+    symbol["semanticVariantId"] = fact->semantic_variant_id;
+    symbol["translationUnit"] = fact->translation_unit;
+    symbol["compileContextDigest"] = fact->compile_context_digest;
     if (!fact->target.empty())
       symbol["target"] = fact->target;
     if (!fact->target_symbol_id.empty())
@@ -393,10 +418,13 @@ void emit_ingest_packet(const ParseResult &result, const Options &options) {
     projected["id"] = "clang-occurrence:" + fact->kind + ":" +
                       (!fact->target_symbol_id.empty() ? fact->target_symbol_id : fact->qualified_name) + "@" +
                       fact->location.path + ":" + std::to_string(fact->location.start_offset) + ":" +
-                      std::to_string(fact->location.end_offset);
+                      std::to_string(fact->location.end_offset) + "@variant:" + fact->semantic_variant_id;
     projected["ownerPath"] = fact->location.path;
     projected["name"] = fact->name;
     projected["kind"] = fact->kind;
+    projected["semanticVariantId"] = fact->semantic_variant_id;
+    projected["translationUnit"] = fact->translation_unit;
+    projected["compileContextDigest"] = fact->compile_context_digest;
     projected["sourceLocator"] = fact->location.path + ":" + std::to_string(fact->location.start_line) + ":" +
                                  std::to_string(fact->location.end_line);
     projected["startColumn"] = fact->location.start_column;
@@ -442,6 +470,9 @@ void emit_ingest_packet(const ParseResult &result, const Options &options) {
   for (const auto &usage : result.dependency_usages) {
     llvm::json::Object dependency;
     dependency["ownerPath"] = usage.owner_path;
+    dependency["translationUnit"] = usage.translation_unit;
+    dependency["compileContextDigest"] = usage.compile_context_digest;
+    dependency["semanticVariantId"] = usage.semantic_variant_id;
     dependency["packageName"] = usage.package_name;
     dependency["importPath"] = usage.import_path;
     if (!usage.resolved_path.empty())
