@@ -31,8 +31,8 @@
     "agentSearchJson": "block"
   },
   "routes": {
-    "query": {"argv": ["ccls-asp", "--language", "objective-c", "query", "--from-hook", "direct-source-read", "--selector", "{selector}", "{termArgs}", "--workspace", "{projectRoot}", "--view", "seeds"]},
-    "ingest": {"argv": ["ccls-asp", "--language", "objective-c", "search", "ingest", "--workspace", "{projectRoot}", "--view", "seeds"], "stdinMode": "pipe-candidates"},
+    "query": {"argv": ["ccls-asp", "--language", "objective-c", "query", "--selector", "{selector}", "--workspace", "{projectRoot}", "--code"]},
+    "ingest": {"argv": ["ccls-asp", "--language", "objective-c", "search", "ingest", "--workspace", "{projectRoot}"], "stdinMode": "pipe-candidates"},
     "guide": {"argv": ["ccls-asp", "--language", "objective-c", "guide", "--workspace", "{projectRoot}"]}
   }
 }

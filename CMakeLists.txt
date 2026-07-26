@@ -62,17 +62,17 @@ add_test(NAME ccls-asp-guide COMMAND ccls-asp guide --language cpp)
 add_test(
   NAME ccls-asp-c-ingest
   COMMAND ccls-asp --language c search ingest
-          --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/c --json
+          --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/c
 )
 add_test(
   NAME ccls-asp-cpp-ingest
   COMMAND ccls-asp --language cpp search ingest
-          --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cpp --json
+          --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cpp
 )
 add_test(
   NAME ccls-asp-objective-c-ingest
   COMMAND ccls-asp --language objective-c search ingest
-          --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/objective-c --json
+          --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/objective-c
 )
 add_test(
   NAME ccls-asp-exact-code
@@ -93,11 +93,17 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_semantic_relations.cmake
 )
 add_test(
+  NAME ccls-asp-cli-contract
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_cli_contract.cmake
+)
+add_test(
   NAME ccls-asp-self-ingest
   COMMAND
     ccls-asp --language cpp search ingest --owner src/asp_parser.cc
     --workspace ${CMAKE_CURRENT_SOURCE_DIR}
-    --compilation-database ${CMAKE_CURRENT_BINARY_DIR} --json
+    --compilation-database ${CMAKE_CURRENT_BINARY_DIR}
 )
 set_tests_properties(
   ccls-asp-self-ingest

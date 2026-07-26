@@ -61,18 +61,12 @@ Options parse_options(int argc, char **argv) {
       std::string owner;
       take(owner);
       options.owners.push_back(std::move(owner));
-    } else if (arg == "--json") {
-      // Compatibility flag. Provider stdout is always a JSON packet; ASP owns rendering.
     } else if (arg == "--code")
       options.code = true;
-    else if (arg == "--view") {
-      std::string ignored;
-      take(ignored);
-    } else if (arg == "--from-hook" || arg == "--surface") {
-      std::string ignored;
-      take(ignored);
-    } else if (!arg.starts_with("--"))
+    else if (!arg.starts_with("--"))
       positional.push_back(std::move(arg));
+    else
+      throw std::runtime_error("unsupported option: " + arg);
   }
 
   if (positional.empty())
@@ -80,10 +74,11 @@ Options parse_options(int argc, char **argv) {
   else {
     options.command = positional[0];
     if (options.command == "search") {
-      options.search_view = positional.size() > 1 ? positional[1] : "ingest";
-    } else if (options.command == "query" && options.selector.empty() && positional.size() > 1) {
-      options.selector = positional[1];
-    }
+      if (positional.size() != 2)
+        throw std::runtime_error("search requires exactly one provider operation: ingest");
+      options.search_view = positional[1];
+    } else if (positional.size() != 1)
+      throw std::runtime_error(options.command + " does not accept positional arguments");
   }
   return options;
 }
@@ -507,6 +502,8 @@ int main(int argc, char **argv) {
     if (!valid_language(options.language))
       throw std::runtime_error("--language must be c, cpp, or objective-c");
     if (options.command == "guide" || options.command == "help") {
+      if (!options.selector.empty() || !options.owners.empty() || !options.compilation_database.empty() || options.code)
+        throw std::runtime_error("guide does not accept query or ingest options");
       emit_guide_packet(options);
       return 0;
     }
@@ -514,6 +511,8 @@ int main(int argc, char **argv) {
     if (options.command == "query") {
       if (options.selector.empty())
         throw std::runtime_error("query requires --selector");
+      if (!options.owners.empty())
+        throw std::runtime_error("query does not accept --owner");
       const Selector selector = parse_selector(options.selector);
       const std::optional<std::string> compilation_database =
           options.compilation_database.empty() ? std::nullopt
@@ -527,6 +526,8 @@ int main(int argc, char **argv) {
     if (options.command == "search") {
       if (options.search_view != "ingest")
         throw std::runtime_error("provider search supports only ingest; use the asp language facade for search");
+      if (!options.selector.empty() || options.code)
+        throw std::runtime_error("search ingest does not accept query options");
       const std::optional<std::string> compilation_database =
           options.compilation_database.empty() ? std::nullopt
                                                : std::optional<std::string>(options.compilation_database);
