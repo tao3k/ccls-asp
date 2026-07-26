@@ -1,15 +1,25 @@
 set(test_root "${CMAKE_CURRENT_BINARY_DIR}/ccls-asp-parser-identity")
 file(REMOVE_RECURSE "${test_root}")
 file(MAKE_DIRECTORY "${test_root}/base" "${test_root}/shifted")
-file(READ "${CMAKE_CURRENT_LIST_DIR}/fixtures/cpp/widget.cpp" fixture_source)
+set(fixture_source "int stable_item(int value) { return value + 1; }\n")
+file(WRITE "${test_root}/empty-input" "")
 file(WRITE "${test_root}/base/widget.cpp" "${fixture_source}")
 file(WRITE "${test_root}/shifted/widget.cpp" "\n${fixture_source}")
 
 function(run_ingest workspace extra_flag output_var)
+  file(WRITE "${workspace}/compile_commands.json"
+       "[\n"
+       "  {\"directory\":\"${workspace}\","
+       "\"command\":\"clang++ -std=c++17 -c widget.cpp\","
+       "\"file\":\"${workspace}/widget.cpp\"}\n"
+       "]\n")
   execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env
             "CCLS_ASP_EXTRA_CLANG_ARGS=${extra_flag}"
             "${CCLS_ASP}" --language cpp search ingest --workspace "${workspace}"
+            --compilation-database "${workspace}"
+    INPUT_FILE "${test_root}/empty-input"
+    TIMEOUT 30
     RESULT_VARIABLE status
     OUTPUT_VARIABLE output
     ERROR_VARIABLE error
