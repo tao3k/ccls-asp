@@ -43,6 +43,10 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+target_include_directories(ccls-asp SYSTEM PRIVATE
+  ${LLVM_INCLUDE_DIRS}
+  ${CLANG_INCLUDE_DIRS}
+)
 target_include_directories(ccls-asp PRIVATE src)
 
 target_compile_definitions(ccls-asp-parser PRIVATE ${LLVM_DEFINITIONS})
