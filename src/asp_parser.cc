@@ -543,8 +543,7 @@ public:
     }
     if (!resolved_path.empty())
       keys.insert(resolved_path);
-    const auto semantic_variant_id =
-        semantic_variant_id_for(state_, {}, import_path, {}, "include", "dependency");
+    const auto semantic_variant_id = semantic_variant_id_for(state_, {}, import_path, {}, "include", "dependency");
     keys.insert(state_.current_translation_unit);
     keys.insert(state_.current_compile_context_digest);
     keys.insert(semantic_variant_id);
@@ -787,8 +786,8 @@ static std::vector<std::string> environment_compiler_args() {
 }
 
 ParseResult parse_translation_units(const std::string &workspace, const std::vector<std::string> &owners,
-                                    const std::string &language,
-                                    const std::optional<std::string> &compilation_database) {
+                                    const std::string &language, const std::optional<std::string> &compilation_database,
+                                    const std::optional<std::vector<std::string>> &normalized_compile_args) {
   ParseResult result;
   std::error_code ec;
   fs::path root = fs::weakly_canonical(fs::path(workspace), ec);
@@ -806,7 +805,9 @@ ParseResult parse_translation_units(const std::string &workspace, const std::vec
       database_root = root / database_root;
     database_root = fs::weakly_canonical(database_root, ec);
   }
-  auto database = clang::tooling::CompilationDatabase::autoDetectFromDirectory(database_root.string(), database_error);
+  std::unique_ptr<clang::tooling::CompilationDatabase> database;
+  if (!normalized_compile_args)
+    database = clang::tooling::CompilationDatabase::autoDetectFromDirectory(database_root.string(), database_error);
 
   std::vector<std::string> files;
   if (!owners.empty()) {
@@ -830,7 +831,7 @@ ParseResult parse_translation_units(const std::string &workspace, const std::vec
 
   std::sort(files.begin(), files.end());
   files.erase(std::unique(files.begin(), files.end()), files.end());
-  const auto compiler_args = environment_compiler_args();
+  const auto compiler_args = normalized_compile_args ? *normalized_compile_args : environment_compiler_args();
   for (const auto &file : files) {
     const auto relative = fs::relative(fs::path(file), root, ec);
     if (!ec && !relative.native().starts_with("..")) {
@@ -865,18 +866,18 @@ ParseResult parse_translation_units(const std::string &workspace, const std::vec
   }
 
   std::sort(state.facts.begin(), state.facts.end(), [](const Fact &left, const Fact &right) {
-    return std::tie(left.location.path, left.location.start_line, left.kind, left.qualified_name,
-                    left.translation_unit, left.compile_context_digest) <
-           std::tie(right.location.path, right.location.start_line, right.kind, right.qualified_name,
-                    right.translation_unit, right.compile_context_digest);
+    return std::tie(left.location.path, left.location.start_line, left.kind, left.qualified_name, left.translation_unit,
+                    left.compile_context_digest) < std::tie(right.location.path, right.location.start_line, right.kind,
+                                                            right.qualified_name, right.translation_unit,
+                                                            right.compile_context_digest);
   });
   result.facts = std::move(state.facts);
   std::sort(state.dependency_usages.begin(), state.dependency_usages.end(),
             [](const DependencyUsage &left, const DependencyUsage &right) {
               return std::tie(left.owner_path, left.source_locator, left.import_path, left.translation_unit,
-                              left.compile_context_digest) <
-                     std::tie(right.owner_path, right.source_locator, right.import_path, right.translation_unit,
-                              right.compile_context_digest);
+                              left.compile_context_digest) < std::tie(right.owner_path, right.source_locator,
+                                                                      right.import_path, right.translation_unit,
+                                                                      right.compile_context_digest);
             });
   result.dependency_usages = std::move(state.dependency_usages);
   return result;

@@ -62,9 +62,11 @@ struct ParseResult {
   std::vector<std::string> errors;
 };
 
-ParseResult parse_translation_units(const std::string &workspace, const std::vector<std::string> &owners,
-                                    const std::string &language,
-                                    const std::optional<std::string> &compilation_database = std::nullopt);
+ParseResult
+parse_translation_units(const std::string &workspace, const std::vector<std::string> &owners,
+                        const std::string &language,
+                        const std::optional<std::string> &compilation_database = std::nullopt,
+                        const std::optional<std::vector<std::string>> &normalized_compile_args = std::nullopt);
 
 bool supports_source_path(const std::string &path, const std::string &language);
 

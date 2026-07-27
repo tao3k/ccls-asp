@@ -1,0 +1,4 @@
+SNAPSHOT	ccls-asp-native-library	1
+SCENARIO	cpp	widget.cpp
+COUNTS	facts=55	dependencies=0	contexts=1	errors=0
+DIGEST	fnv1a64:c81434948b401a63
