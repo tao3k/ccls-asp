@@ -158,6 +158,10 @@ int main(int argc, char **argv) {
 
   std::erase_if(result.facts, [](const ccls_asp::Fact &fact) { return fact.role == "reference"; });
 
+  if (language == "objective-c") {
+    std::erase_if(result.facts, [](const ccls_asp::Fact &fact) { return fact.kind == "field"; });
+  }
+
   print_snapshot(result, workspace, language, owner);
   std::cerr << "PERF\tccls-asp-native-library\t1"
             << "\titerations=" << iterations << "\tproviderProcessLaunches=0"
