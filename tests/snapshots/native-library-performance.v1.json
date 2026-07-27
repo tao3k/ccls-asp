@@ -1,0 +1,31 @@
+{
+  "schemaId": "ccls-asp.native-library-performance-scenario.v1",
+  "schemaVersion": "1",
+  "scenarioId": "cpp-widget-single-tu-warm-v1",
+  "languageId": "cpp",
+  "workspace": "tests/fixtures/cpp",
+  "translationUnit": "widget.cpp",
+  "iterations": 5,
+  "functionalSnapshot": "cpp-native-library.v1.snapshot",
+  "metrics": [
+    "providerProcessLaunches",
+    "translationUnits",
+    "coldMicros",
+    "medianMicros",
+    "totalMicros"
+  ],
+  "invariants": {
+    "providerProcessLaunches": 0,
+    "translationUnits": 1,
+    "errors": 0
+  },
+  "comparisonProfile": [
+    "platform",
+    "architecture",
+    "buildType",
+    "clangIdentity",
+    "fixtureDigest",
+    "scenarioId"
+  ],
+  "timingPolicy": "receipt-only-until-matching-profile-history-exists"
+}

@@ -1,0 +1,4 @@
+SNAPSHOT	ccls-asp-native-library	1
+SCENARIO	c	widget.c
+COUNTS	facts=8	dependencies=1	contexts=1	errors=0
+DIGEST	fnv1a64:f4581c02b2972655

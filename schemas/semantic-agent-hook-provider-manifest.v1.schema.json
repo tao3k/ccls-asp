@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-semantic-protocols.local/schemas/semantic-agent-hook-provider-manifest.v1.schema.json",
+  "title": "Semantic Agent Hook Provider Manifest",
+  "description": "Static provider-owned facts used by agent-semantic-hook after a workspace activation selects the provider.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "protocolId",
+    "protocolVersion",
+    "manifestId",
+    "manifestVersion",
+    "languageId",
+    "providerId",
+    "namespace",
+    "binary",
+    "source",
+    "searchCapabilities",
+    "policy",
+    "queryPackDescriptor",
+    "routeBindings"
+  ],
+  "properties": {
+    "schemaId": {
+      "const": "agent.semantic-protocols.hook.provider-manifest"
+    },
+    "schemaVersion": {
+      "const": "1"
+    },
+    "protocolId": {
+      "const": "agent.semantic-protocols.hook"
+    },
+    "protocolVersion": {
+      "const": "1"
+    },
+    "manifestId": {
+      "$ref": "#/$defs/namespace"
+    },
+    "manifestVersion": {
+      "$ref": "#/$defs/identifier"
+    },
+    "languageId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "providerId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "namespace": {
+      "$ref": "#/$defs/namespace"
+    },
+    "binary": {
+      "$ref": "#/$defs/binary"
+    },
+    "execution": {
+      "$ref": "#/$defs/providerExecution"
+    },
+    "source": {
+      "$ref": "#/$defs/sourceDefaults"
+    },
+    "searchCapabilities": {
+      "$ref": "#/$defs/searchCapabilities"
+    },
+    "semanticFactsDescriptor": {
+      "type": "object"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy"
+    },
+    "queryPackDescriptor": {
+      "$ref": "https://tao3k.github.io/agent-semantic-protocols/schemas/provider-query-pack-descriptor.v1.schema.json"
+    },
+    "routeBindings": {
+      "$ref": "#/$defs/routeBindings"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "binary": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "namespace": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$"
+    },
+    "providerExecution": {
+      "type": "string",
+      "enum": [
+        "external-process",
+        "embedded"
+      ]
+    },
+    "pathPattern": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "pattern": "^/"
+      }
+    },
+    "sourceExtension": {
+      "type": "string",
+      "pattern": "^\\.[A-Za-z0-9]+$"
+    },
+    "sourceDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "defaultExtensions",
+        "defaultConfigFiles",
+        "defaultSourceRoots",
+        "defaultIgnoredPathPrefixes"
+      ],
+      "properties": {
+        "defaultExtensions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sourceExtension"
+          }
+        },
+        "defaultConfigFiles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/pathPattern"
+          }
+        },
+        "defaultSourceRoots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/pathPattern"
+          }
+        },
+        "defaultIgnoredPathPrefixes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/pathPattern"
+          }
+        },
+        "defaultProjectMarkers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/pathPattern"
+          }
+        },
+        "defaultDependencyMarkers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/pathPattern"
+          }
+        }
+      }
+    },
+    "searchCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ownerItems": {
+          "type": "boolean",
+          "default": false
+        },
+        "semanticFacts": {
+          "type": "boolean",
+          "default": false
+        },
+        "dependencyTopology": {
+          "type": "boolean",
+          "default": false
+        },
+        "dependencyTopologyMetadata": {
+          "type": "boolean",
+          "default": false
+        },
+        "workspaceScope": {
+          "type": "boolean",
+          "default": false
+        },
+        "sourceSnapshot": {
+          "type": "object"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directSourceRead",
+        "bulkSourceDump",
+        "rawSourceSearch",
+        "agentSearchJson"
+      ],
+      "properties": {
+        "directSourceRead": {
+          "$ref": "#/$defs/actionPolicy"
+        },
+        "bulkSourceDump": {
+          "$ref": "#/$defs/actionPolicy"
+        },
+        "rawSourceSearch": {
+          "$ref": "#/$defs/actionPolicy"
+        },
+        "agentSearchJson": {
+          "$ref": "#/$defs/actionPolicy"
+        }
+      }
+    },
+    "actionPolicy": {
+      "enum": [
+        "block",
+        "allow",
+        "advisory"
+      ]
+    },
+    "routeBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prime",
+        "owner",
+        "lexical",
+        "ingest"
+      ],
+      "properties": {
+        "prime": {
+          "$ref": "#/$defs/methodBinding"
+        },
+        "owner": {
+          "$ref": "#/$defs/methodBinding"
+        },
+        "query": {
+          "$ref": "#/$defs/methodBinding"
+        },
+        "ingest": {
+          "$ref": "#/$defs/methodBinding"
+        },
+        "checkChanged": {
+          "$ref": "#/$defs/methodBinding"
+        },
+        "dependencyTopology": {
+          "$ref": "#/$defs/methodBinding"
+        },
+        "dependencyTopologyMetadata": {
+          "$ref": "#/$defs/methodBinding"
+        },
+        "workspaceScope": {
+          "$ref": "#/$defs/methodBinding"
+        },
+        "guide": {
+          "$ref": "#/$defs/methodBinding"
+        },
+        "lexical": {
+          "$ref": "#/$defs/methodBinding"
+        },
+        "exportIndex": {
+          "$ref": "#/$defs/methodBinding"
+        }
+      }
+    },
+    "methodBinding": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$|^guide$"
+    }
+  }
+}

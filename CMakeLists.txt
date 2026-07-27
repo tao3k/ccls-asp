@@ -1,264 +1,226 @@
-cmake_minimum_required(VERSION 3.8)
-project(ccls LANGUAGES CXX C)
+cmake_minimum_required(VERSION 3.20)
+project(ccls_asp LANGUAGES C CXX)
 
-option(USE_SYSTEM_RAPIDJSON "Use system RapidJSON instead of the git submodule if exists" ON)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Sources for the executable are specified at end of CMakeLists.txt
-add_executable(ccls "")
+find_package(Clang REQUIRED CONFIG)
 
-### Default build type
+execute_process(
+  COMMAND ${CMAKE_CXX_COMPILER} --print-resource-dir
+  OUTPUT_VARIABLE CCLS_ASP_CLANG_RESOURCE_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  COMMAND_ERROR_IS_FATAL ANY
+)
 
-set(DEFAULT_CMAKE_BUILD_TYPE Release)
+add_library(ccls-asp-parser SHARED
+  src/asp_parser.cc
+  src/asp_c_api.cc
+)
+set_target_properties(
+  ccls-asp-parser
+  PROPERTIES
+    OUTPUT_NAME ccls-asp-parser
+    POSITION_INDEPENDENT_CODE ON
+)
 
-# CMAKE_BUILD_TYPE is not available if a multi-configuration generator is used
-# (eg Visual Studio generators)
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  message(STATUS "Setting build type to '${DEFAULT_CMAKE_BUILD_TYPE}' as none \
-was specified.")
-  set(CMAKE_BUILD_TYPE ${DEFAULT_CMAKE_BUILD_TYPE}
-      CACHE STRING "Choose the type of build." FORCE)
-
-  # Set the possible values of build type for cmake-gui
-  set_property(CACHE CMAKE_BUILD_TYPE
-               PROPERTY STRINGS Debug Release MinSizeRel RelWithDebInfo)
-endif()
-
-### Compile options
-
-# Enable C++17 (Required)
-set_property(TARGET ccls PROPERTY CXX_STANDARD 17)
-set_property(TARGET ccls PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ccls PROPERTY CXX_EXTENSIONS OFF)
-
-# CMake sets MSVC for both MSVC and Clang(Windows)
-if(MSVC)
-  # Common MSVC/Clang(Windows) options
-  target_compile_options(ccls PRIVATE
-    /nologo
-    /EHsc
-    /D_CRT_SECURE_NO_WARNINGS # don't try to use MSVC std replacements
-    /W3 # roughly -Wall
-    /wd4996 # ignore deprecated declaration
-    /wd4267 # ignores warning C4267
-            # (conversion from 'size_t' to 'type'),
-            # roughly -Wno-sign-compare
-    /wd4800
-    /wd4068 # Disable unknown pragma warning
-    /std:c++17
-    /Zc:__cplusplus
-    $<$<CONFIG:Debug>:/FS>
-  )
-  # relink system libs
-  target_link_libraries(ccls PRIVATE Mincore.lib)
-else()
-  # Common GCC/Clang(Linux) options
-  target_compile_options(ccls PRIVATE
-                         -Wall
-                         -Wno-sign-compare
-                         )
-
-  if(${CMAKE_CXX_COMPILER_ID} STREQUAL GNU)
-    target_compile_options(ccls PRIVATE -Wno-return-type -Wno-unused-result)
-  endif()
-
-  if(${CMAKE_CXX_COMPILER_ID} STREQUAL Clang)
-    target_compile_options(ccls PRIVATE
-                           $<$<CONFIG:Debug>:-fno-limit-debug-info>)
-  endif()
-endif()
-
-### Libraries
-
-find_package(Clang REQUIRED)
-
-if(CLANG_LINK_CLANG_DYLIB)
-  target_link_libraries(ccls PRIVATE clang-cpp)
-else()
-  target_link_libraries(ccls PRIVATE
-    clangIndex
-    clangFormat
-    clangTooling
-    clangToolingInclusions
-    clangToolingCore
-    clangFrontend
-    clangParse
-    clangSerialization
-    clangSema
-    clangAST
-    clangLex
-    clangDriver
-    clangBasic
-  )
-  if(LLVM_VERSION_MAJOR GREATER_EQUAL 23) # llvmorg-22-init-27296-g65cb738ff419
-    target_link_libraries(ccls PRIVATE clangUnifiedSymbolResolution)
-  endif()
-endif()
-
-if(LLVM_LINK_LLVM_DYLIB)
-  target_link_libraries(ccls PRIVATE LLVM)
-else()
-  target_link_libraries(ccls PRIVATE LLVMOption LLVMSupport)
-  if(LLVM_VERSION_MAJOR GREATER_EQUAL 16) # llvmorg-16-init-15123-gf09cf34d0062
-    target_link_libraries(ccls PRIVATE LLVMTargetParser)
-  endif()
-endif()
-
-if(NOT LLVM_ENABLE_RTTI)
-  # releases.llvm.org libraries are compiled with -fno-rtti
-  # The mismatch between lib{clang,LLVM}* and ccls can make libstdc++ std::make_shared return nullptr
-  # _Sp_counted_ptr_inplace::_M_get_deleter
-  if(MSVC)
-    target_compile_options(ccls PRIVATE /GR-)
-  else()
-    target_compile_options(ccls PRIVATE -fno-rtti)
-  endif()
-endif()
-
-# Enable threading support
-set(THREADS_PREFER_PTHREAD_FLAG ON)
-find_package(Threads REQUIRED)
-target_link_libraries(ccls PRIVATE Threads::Threads)
-
-if(${CMAKE_SYSTEM_NAME} STREQUAL FreeBSD)
-  find_package(Backtrace REQUIRED)
-  target_link_libraries(ccls PRIVATE ${Backtrace_LIBRARIES})
-  # src/platform_posix.cc uses libthr
-  target_link_libraries(ccls PRIVATE thr)
-endif()
-
-if(LLVM_ENABLE_ZLIB)
-  find_package(ZLIB)
-endif()
-
-### Definitions
-
-# Find Clang resource directory with Clang executable.
-
-if(NOT CLANG_RESOURCE_DIR)
-  find_program(CLANG_EXECUTABLE clang)
-  if(NOT CLANG_EXECUTABLE)
-    message(FATAL_ERROR "clang executable not found.")
-  endif()
-
-  execute_process(
-    COMMAND ${CLANG_EXECUTABLE} -print-resource-dir
-    RESULT_VARIABLE CLANG_FIND_RESOURCE_DIR_RESULT
-    OUTPUT_VARIABLE CLANG_RESOURCE_DIR
-    ERROR_VARIABLE CLANG_FIND_RESOURCE_DIR_ERROR
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-  )
-
-  if(CLANG_FIND_RESOURCE_DIR_RESULT)
-    message(FATAL_ERROR "Error retrieving Clang resource directory with Clang \
-            executable. Output:\n ${CLANG_FIND_RESOURCE_DIR_ERROR}")
-  endif()
-endif()
-
-set_property(SOURCE src/utils.cc APPEND PROPERTY COMPILE_DEFINITIONS
-             CLANG_RESOURCE_DIRECTORY=R"\(${CLANG_RESOURCE_DIR}\)")
-
-### Includes
-
-if(USE_SYSTEM_RAPIDJSON)
-  set(RapidJSON_MIN_VERSION "1.1.0")
-  find_package(RapidJSON ${RapidJSON_MIN_VERSION} QUIET)
-  if(NOT DEFINED RapidJSON_INCLUDE_DIRS AND DEFINED RAPIDJSON_INCLUDE_DIRS)
-    set(RapidJSON_INCLUDE_DIRS "${RAPIDJSON_INCLUDE_DIRS}")
-  endif()
-endif()
-if(NOT RapidJSON_FOUND)
-  if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/rapidjson/include")
-    message(STATUS "Using local RapidJSON")
-    set(RapidJSON_INCLUDE_DIRS third_party/rapidjson/include)
-  else()
-    message(STATUS "Plase initialize rapidJSON git submodule as currently installed version is to old:")
-    message(STATUS "git submodule init && git submodule update")
-    message(FATAL_ERROR "RapidJSON version is likely too old. See https://github.com/MaskRay/ccls/issues/455")
-  endif()
-endif()
-
-target_include_directories(ccls PRIVATE src)
-
-foreach(include_dir third_party
-    ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS} ${RapidJSON_INCLUDE_DIRS})
-  get_filename_component(include_dir_realpath ${include_dir} REALPATH)
-  # Don't add as SYSTEM if they are in CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES.
-  # It would reorder the system search paths and cause issues with libstdc++'s
-  # use of #include_next. See https://github.com/MaskRay/ccls/pull/417
-  if(NOT "${include_dir_realpath}" IN_LIST CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-    target_include_directories(ccls SYSTEM PRIVATE ${include_dir})
-  endif()
-endforeach()
-
-### Install
-
-install(TARGETS ccls RUNTIME DESTINATION bin)
-
-### Sources
-
-target_sources(ccls PRIVATE third_party/siphash.cc)
-
-target_sources(ccls PRIVATE
-  src/clang_tu.cc
-  src/config.cc
-  src/filesystem.cc
-  src/fuzzy_match.cc
+add_executable(ccls-asp
   src/main.cc
-  src/indexer.cc
-  src/log.cc
-  src/lsp.cc
-  src/message_handler.cc
-  src/pipeline.cc
-  src/platform_posix.cc
-  src/platform_win.cc
-  src/position.cc
-  src/project.cc
-  src/query.cc
-  src/sema_manager.cc
-  src/serializer.cc
-  src/test.cc
-  src/utils.cc
-  src/working_files.cc
 )
 
-target_sources(ccls PRIVATE
-  src/messages/ccls_call.cc
-  src/messages/ccls_info.cc
-  src/messages/ccls_inheritance.cc
-  src/messages/ccls_member.cc
-  src/messages/ccls_navigate.cc
-  src/messages/ccls_reload.cc
-  src/messages/ccls_vars.cc
-  src/messages/initialize.cc
-  src/messages/textDocument_code.cc
-  src/messages/textDocument_completion.cc
-  src/messages/textDocument_definition.cc
-  src/messages/textDocument_did.cc
-  src/messages/textDocument_foldingRange.cc
-  src/messages/textDocument_formatting.cc
-  src/messages/textDocument_document.cc
-  src/messages/textDocument_hover.cc
-  src/messages/textDocument_references.cc
-  src/messages/textDocument_rename.cc
-  src/messages/textDocument_signatureHelp.cc
-  src/messages/workspace.cc
+target_include_directories(ccls-asp-parser SYSTEM PRIVATE
+  ${LLVM_INCLUDE_DIRS}
+  ${CLANG_INCLUDE_DIRS}
+)
+target_include_directories(ccls-asp-parser PRIVATE
+  src
+)
+target_include_directories(
+  ccls-asp-parser
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_include_directories(ccls-asp SYSTEM PRIVATE
+  ${LLVM_INCLUDE_DIRS}
+  ${CLANG_INCLUDE_DIRS}
+)
+target_include_directories(ccls-asp PRIVATE src)
+
+target_compile_definitions(ccls-asp-parser PRIVATE ${LLVM_DEFINITIONS})
+target_compile_definitions(
+  ccls-asp-parser PRIVATE
+  CCLS_ASP_CLANG_RESOURCE_DIR="${CCLS_ASP_CLANG_RESOURCE_DIR}"
+)
+string(REPLACE ";" "|" CCLS_ASP_CXX_IMPLICIT_INCLUDE_DIRS "${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES}")
+target_compile_definitions(
+  ccls-asp-parser
+  PRIVATE CCLS_ASP_CXX_IMPLICIT_INCLUDE_DIRS="${CCLS_ASP_CXX_IMPLICIT_INCLUDE_DIRS}"
 )
 
-### Obtain CCLS version information from Git
-### This only happens when cmake is re-run!
+target_compile_options(ccls-asp-parser PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(ccls-asp PRIVATE -Wall -Wextra -Wpedantic)
 
-if(NOT CCLS_VERSION)
-  execute_process(COMMAND git describe --tag --long HEAD
-    OUTPUT_VARIABLE CCLS_VERSION
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-
-  if(NOT CCLS_VERSION)
-    set(CCLS_VERSION "<unknown>")
-  endif()
+if(TARGET clang-cpp)
+  target_link_libraries(ccls-asp-parser PUBLIC clang-cpp LLVM)
+else()
+  target_link_libraries(ccls-asp-parser PUBLIC
+    clangAST
+    clangBasic
+    clangFrontend
+    clangIndex
+    clangSerialization
+    clangTooling
+    LLVMOption
+    LLVMSupport
+  )
 endif()
 
-set_property(SOURCE src/main.cc APPEND PROPERTY
-             COMPILE_DEFINITIONS CCLS_VERSION=\"${CCLS_VERSION}\")
-set_property(SOURCE src/messages/initialize.cc APPEND PROPERTY
-             COMPILE_DEFINITIONS CCLS_VERSION=\"${CCLS_VERSION}\")
+target_link_libraries(ccls-asp PRIVATE ccls-asp-parser)
+
+install(
+  TARGETS ccls-asp ccls-asp-parser
+  RUNTIME DESTINATION bin
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib
+)
+install(FILES include/ccls_asp.h DESTINATION include)
+
+enable_testing()
+add_executable(ccls-asp-native-library-scenario
+  tests/native_library_scenario.cc
+)
+target_include_directories(ccls-asp-native-library-scenario PRIVATE src)
+target_compile_options(
+  ccls-asp-native-library-scenario PRIVATE -Wall -Wextra -Wpedantic
+)
+target_link_libraries(
+  ccls-asp-native-library-scenario PRIVATE ccls-asp-parser
+)
+
+add_executable(ccls-asp-native-c-abi-smoke
+  tests/native_c_abi_smoke.c
+)
+set_target_properties(
+  ccls-asp-native-c-abi-smoke PROPERTIES LINKER_LANGUAGE CXX
+)
+target_link_libraries(ccls-asp-native-c-abi-smoke PRIVATE ccls-asp-parser)
+
+add_test(NAME ccls-asp-guide COMMAND ccls-asp guide --language cpp)
+add_test(
+  NAME ccls-asp-c-ingest
+  COMMAND ccls-asp --language c search ingest
+          --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/c
+)
+add_test(
+  NAME ccls-asp-cpp-ingest
+  COMMAND ccls-asp --language cpp search ingest
+          --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cpp
+)
+add_test(
+  NAME ccls-asp-objective-c-ingest
+  COMMAND ccls-asp --language objective-c search ingest
+          --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/objective-c
+)
+add_test(
+  NAME ccls-asp-exact-code
+  COMMAND ccls-asp --language cpp query
+          --selector widget.cpp:1:4
+          --workspace ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cpp --code
+)
+add_test(
+  NAME ccls-asp-json-only-contract
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_json_only.cmake
+)
+add_test(
+  NAME ccls-asp-semantic-relations
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_semantic_relations.cmake
+)
+add_test(
+  NAME ccls-asp-canonical-selector
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_canonical_selector.cmake
+)
+add_test(
+  NAME ccls-asp-parser-identity
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_parser_identity.cmake
+)
+add_test(
+  NAME ccls-asp-context-variants
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_context_variants.cmake
+)
+add_test(
+  NAME ccls-asp-cli-contract
+  COMMAND
+    ${CMAKE_COMMAND} -DCCLS_ASP=$<TARGET_FILE:ccls-asp> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_cli_contract.cmake
+)
+add_test(
+  NAME ccls-asp-native-library-cpp-snapshot
+  COMMAND
+    ${CMAKE_COMMAND}
+    -DSCENARIO=$<TARGET_FILE:ccls-asp-native-library-scenario>
+    -DWORKSPACE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cpp
+    -DOWNER=widget.cpp
+    -DLANGUAGE=cpp
+    -DSNAPSHOT=${CMAKE_CURRENT_SOURCE_DIR}/tests/snapshots/cpp-native-library.v1.snapshot
+    -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_native_library_snapshot.cmake
+)
+add_test(
+  NAME ccls-asp-native-library-c-snapshot
+  COMMAND
+    ${CMAKE_COMMAND}
+    -DSCENARIO=$<TARGET_FILE:ccls-asp-native-library-scenario>
+    -DWORKSPACE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/c
+    -DOWNER=widget.c
+    -DLANGUAGE=c
+    -DSNAPSHOT=${CMAKE_CURRENT_SOURCE_DIR}/tests/snapshots/c-native-library.v1.snapshot
+    -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_native_library_snapshot.cmake
+)
+add_test(
+  NAME ccls-asp-native-library-objective-c-snapshot
+  COMMAND
+    ${CMAKE_COMMAND}
+    -DSCENARIO=$<TARGET_FILE:ccls-asp-native-library-scenario>
+    -DWORKSPACE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/objective-c
+    -DOWNER=Widget.m
+    -DLANGUAGE=objective-c
+    -DSNAPSHOT=${CMAKE_CURRENT_SOURCE_DIR}/tests/snapshots/objective-c-native-library.v1.snapshot
+    -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_native_library_snapshot.cmake
+)
+add_test(
+  NAME ccls-asp-native-c-abi
+  COMMAND
+    ccls-asp-native-c-abi-smoke
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cpp
+)
+add_test(
+  NAME ccls-asp-native-library-performance
+  COMMAND
+    ccls-asp-native-library-scenario
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cpp
+    widget.cpp
+    cpp
+    -
+    5
+)
+set_tests_properties(
+  ccls-asp-native-library-performance
+  PROPERTIES
+    LABELS "performance;snapshot"
+    PASS_REGULAR_EXPRESSION "providerProcessLaunches=0"
+)

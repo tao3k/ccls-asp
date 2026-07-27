@@ -1,29 +1,47 @@
-# ccls
+# ccls-asp
 
-[![Telegram](https://img.shields.io/badge/telegram-@cclsp-blue.svg)](https://telegram.me/ccls_lsp)
-[![Gitter](https://img.shields.io/badge/gitter-ccls--project-blue.svg?logo=gitter-white)](https://gitter.im/ccls-project/ccls)
+`ccls-asp` is the compiler-native C-family provider for Agent Semantic
+Protocols. It is derived from ccls' Clang indexing lineage, but it is not an
+LSP server.
 
-ccls, which originates from [cquery](https://github.com/cquery-project/cquery), is a C/C++/Objective-C language server.
+The fork intentionally removes JSON-RPC, editor lifecycle state, completion,
+hover, rename, formatting, diagnostic pushes, semantic-token pushes, and
+document synchronization. The retained product boundary is:
 
-  * code completion (with both signature help and snippets)
-  * [definition](src/messages/textDocument_definition.cc)/[references](src/messages/textDocument_references.cc), and other cross references
-  * cross reference extensions: `$ccls/call` `$ccls/inheritance` `$ccls/member` `$ccls/vars` ...
-  * formatting
-  * hierarchies: [call (caller/callee) hierarchy](src/messages/ccls_call.cc), [inheritance (base/derived) hierarchy](src/messages/ccls_inheritance.cc), [member hierarchy](src/messages/ccls_member.cc)
-  * [symbol rename](src/messages/textDocument_rename.cc)
-  * [document symbols](src/messages/textDocument_document.cc) and approximate search of [workspace symbol](src/messages/workspace.cc)
-  * [hover information](src/messages/textDocument_hover.cc)
-  * diagnostics and code actions (clang FixIts)
-  * semantic highlighting and preprocessor skipped regions
-  * semantic navigation: `$ccls/navigate`
+- compilation database fidelity;
+- Clang AST declarations, definitions, calls, types, inheritance, and
+  Objective-C entities;
+- ASP `search`, `query`, and `guide` commands;
+- schema-owned JSON packets and compact agent-facing projections.
 
-It has a global view of the code base and support a lot of cross reference features, see [wiki/FAQ](../../wiki/FAQ).
-It starts indexing the whole project (including subprojects if exist) parallelly when you open the first file, while the main thread can serve requests before the indexing is complete.
-Saving files will incrementally update the index.
+## Build
 
-# >>> [Getting started](../../wiki/Home) (CLICK HERE) <<<
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
 
-* [Build](../../wiki/Build)
-* [FAQ](../../wiki/FAQ)
+## Commands
 
-ccls can index itself (~180MiB RSS when idle, noted on 2018-09-01), FreeBSD, glibc, Linux, LLVM (~1800MiB RSS), musl (~60MiB RSS), ... with decent memory footprint. See [wiki/Project-Setup](../../wiki/Project-Setup) for examples.
+```sh
+build/ccls-asp --language c search prime --workspace . --view seeds
+build/ccls-asp --language cpp search owner src/widget.cc items --workspace . --json
+build/ccls-asp --language objective-c search lexical Controller owner tests --workspace . --json
+build/ccls-asp --language cpp query --selector src/widget.cc:10:40 --workspace . --code
+```
+
+Supported public language identities are `c`, `cpp`, and `objective-c`.
+
+## Schema ownership
+
+The shared packet schemas in `schemas/` are synchronized from
+`agent-semantic-protocols`; this repository does not evolve them independently.
+From the protocol repository, run:
+
+```sh
+python -m tools schema profiles validate c-family
+python -m tools schema profiles sync c-family
+```
+
+The root profile gate rejects missing, extra, or drifted provider-local copies.
