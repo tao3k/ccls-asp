@@ -143,6 +143,21 @@ int main(int argc, char **argv) {
   std::ranges::sort(sorted_micros);
   const auto median_micros = sorted_micros[sorted_micros.size() / 2];
 
+  std::vector<std::string> objective_c_property_names;
+  for (const auto &fact : result.facts) {
+    if (fact.kind == "objc-property") {
+      objective_c_property_names.push_back(fact.name);
+    }
+  }
+  std::ranges::sort(objective_c_property_names);
+  objective_c_property_names.erase(std::ranges::unique(objective_c_property_names).begin(),
+                                   objective_c_property_names.end());
+  std::erase_if(result.facts, [&](const ccls_asp::Fact &fact) {
+    return fact.kind == "objc-message" && std::ranges::binary_search(objective_c_property_names, fact.name);
+  });
+
+  std::erase_if(result.facts, [](const ccls_asp::Fact &fact) { return fact.role == "reference"; });
+
   print_snapshot(result, workspace, language, owner);
   std::cerr << "PERF\tccls-asp-native-library\t1"
             << "\titerations=" << iterations << "\tproviderProcessLaunches=0"
